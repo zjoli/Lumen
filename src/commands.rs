@@ -8,6 +8,11 @@ pub enum Command {
     Model(Option<String>),
     Status,
     Stop,
+    Chat,
+    Read(Option<String>),
+    Open(String),
+    Knowledge,
+    Theme(Option<String>),
     Workspace(WorkspaceCommand),
     Search(String),
     Commit(String),
@@ -104,6 +109,16 @@ pub fn parse(input: &str) -> Option<Command> {
         "/model" => Command::Model(rest()),
         "/status" => Command::Status,
         "/stop" | "/cancel" => Command::Stop,
+        "/chat" if args.is_empty() => Command::Chat,
+        "/read" => Command::Read(rest()),
+        "/open" => rest().map(Command::Open).unwrap_or_else(invalid),
+        "/knowledge" if args.is_empty() => Command::Knowledge,
+        "/theme"
+            if args.is_empty()
+                || args.len() == 1 && matches!(args[0].as_str(), "auto" | "light" | "dark") =>
+        {
+            Command::Theme(rest())
+        }
         "/search" => rest().map(Command::Search).unwrap_or_else(invalid),
         "/commit" => rest().map(Command::Commit).unwrap_or_else(invalid),
         "/history" if args.len() <= 1 => Command::History(args.first().cloned()),
@@ -166,7 +181,7 @@ pub fn parse(input: &str) -> Option<Command> {
     })
 }
 pub fn help() -> &'static str {
-    "/help | /quit | /new | /clear | /model [id] | /status | /stop\n/workspace init <path> | open <path> | clone <url> <path> | config [key value]\n/search <query> | /commit <message> | /sync [message]\n/sync pull | push | fetch | remote [url|none] | conflicts | resolve <path> <file|delete> | continue | abort\n/history [id] | /diff [id] | /restore <id> <commit>\n/index status | refresh | rebuild <all|lexical|relations|learning_state|vectors|summaries>\n/validate"
+    "/help | /quit | /new | /clear | /model [id] | /status | /stop\n/chat | /read [title|id] | /open <title|id> | /knowledge | /theme [auto|light|dark]\n/workspace init <path> | open <path> | clone <url> <path> | config [key value]\n/search <query> | /commit <message> | /sync [message]\n/sync pull | push | fetch | remote [url|none] | conflicts | resolve <path> <file|delete> | continue | abort\n/history [id] | /diff [id] | /restore <id> <commit>\n/index status | refresh | rebuild <all|lexical|relations|learning_state|vectors|summaries>\n/validate\nTUI: F6 切换区域 · F1 目录 · F2 阅读 · F3 对话 · i 输入 · Esc 浏览\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 停止 · Ctrl+Q 退出 · Ctrl+B 目录开关\n阅读: / 查找 · a 引用章节 · v 选区/↑↓ 扩展/a 引用 · Tab 选择链接/Enter 打开\n输入: / 命令 · @ 引用 · ↑↓ 选择/Tab 补全 · Ctrl+R 移除引用"
 }
 #[cfg(test)]
 mod tests {
