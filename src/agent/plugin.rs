@@ -2,6 +2,7 @@ use super::{AgentError, AgentMessage, AgentState, AssistantMessage, ToolCall, To
 use async_trait::async_trait;
 
 pub struct PluginContext<'a> {
+    pub cancel: tokio_util::sync::CancellationToken,
     pub state: &'a mut AgentState,
     pub events: &'a mut super::EventLog,
 }

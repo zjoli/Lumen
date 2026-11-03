@@ -57,6 +57,7 @@ impl AgentLoop {
                 p.before_agent_start(&mut PluginContext {
                     state,
                     events: &mut events,
+                    cancel: cancel.child_token(),
                 })
                 .await?;
             }
@@ -73,6 +74,7 @@ impl AgentLoop {
                     let mut ctx = PluginContext {
                         state,
                         events: &mut events,
+                        cancel: cancel.child_token(),
                     };
                     let mut req = BeforeRequest {
                         messages: &mut request_messages,
@@ -125,6 +127,7 @@ impl AgentLoop {
                         let mut ctx = PluginContext {
                             state,
                             events: &mut events,
+                            cancel: cancel.child_token(),
                         };
                         let mut e = BeforeToolCall {
                             assistant: &assistant,
@@ -158,6 +161,7 @@ impl AgentLoop {
                         let mut ctx = PluginContext {
                             state,
                             events: &mut events,
+                            cancel: cancel.child_token(),
                         };
                         let mut e = AfterToolCall {
                             call: &call,
@@ -176,6 +180,7 @@ impl AgentLoop {
                     let mut ctx = PluginContext {
                         state,
                         events: &mut events,
+                        cancel: cancel.child_token(),
                     };
                     let mut e = TurnEnd {
                         assistant: &assistant,
@@ -229,6 +234,7 @@ impl AgentLoop {
                     &mut PluginContext {
                         state,
                         events: &mut events,
+                        cancel: cancel.child_token(),
                     },
                 ),
             )

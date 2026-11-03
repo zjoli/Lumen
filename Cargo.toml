@@ -15,6 +15,21 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 async-stream = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2", "https", "ssh"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde_yaml_ng = "0.10"
+pulldown-cmark = "0.13"
+uuid = { version = "1", features = ["v7", "serde"] }
+blake3 = "1"
+fs2 = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+libssh2-sys = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+git2 = { version = "0.21", default-features = false, features = ["vendored-openssl"] }
+dbus = { version = "0.9", features = ["vendored"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tempfile = "3"
