@@ -1,5 +1,5 @@
 use super::{text, theme::Theme};
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
@@ -89,11 +89,11 @@ pub fn render(source: &str, width: usize, theme: Theme) -> Rendered {
             Event::Start(Tag::Heading { level, .. }) => {
                 w.blank();
                 w.heading = Some((w.out.lines.len(), String::new()));
-                w.style(if level == HeadingLevel::H1 {
-                    theme.base().add_modifier(Modifier::BOLD)
-                } else {
-                    theme.accent().add_modifier(Modifier::BOLD)
-                });
+                w.spans.push(Span::styled(
+                    format!("{} ", "#".repeat(level as usize)),
+                    theme.violet().add_modifier(Modifier::BOLD),
+                ));
+                w.style(theme.base().add_modifier(Modifier::BOLD));
             }
             Event::End(TagEnd::Heading(_)) => {
                 w.blank();

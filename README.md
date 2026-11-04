@@ -72,7 +72,7 @@ cargo run --bin lumen-tui
 cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 ```
 
-左侧为知识目录，右上在 Markdown 与会话记录之间切换，右下固定保留多行 Agent 输入。布局参考 [Reddix](https://github.com/ck-zhang/reddix) 的面板分区，默认使用终端的前景、背景和 ANSI 调色板，适配 VS Code 的浅色或深色集成终端。
+左侧为知识目录，右上在 Markdown 与会话记录之间切换，右下固定保留多行 Agent 输入。面板共用细线边界，内部标题栏与正文对齐，蓝紫强调色区分导航和 Agent。默认继承终端配色，适配 VS Code 的浅色或深色集成终端；`cargo run --bin lumen-tui -- --theme light` 可查看与设计图一致的浅色配色。
 
 所有文字沿用终端字号；标题通过粗体和颜色区分。输入区默认获得焦点，使用可见的原生插入光标，支持中文、组合字符、左右移动、换行、粘贴和长草稿滚动。VS Code 可按习惯将 `terminal.integrated.fontSize` 设置为 12–14，例如 13；程序不改动字体设置。
 

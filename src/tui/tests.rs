@@ -21,13 +21,22 @@ fn screen(terminal: &Terminal<TestBackend>) -> String {
 
 #[test]
 fn three_regions_and_native_caret_survive_multiline_cjk_and_resizing() {
-    for (width, height) in [(128, 40), (100, 30), (88, 24), (80, 24), (60, 16), (40, 12)] {
+    for (width, height) in [
+        (128, 40),
+        (100, 30),
+        (88, 24),
+        (80, 24),
+        (60, 16),
+        (40, 12),
+        (24, 9),
+    ] {
         for theme in [Theme::Auto, Theme::Light, Theme::Dark] {
             let mut ui = Ui::new("mock".into(), theme);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             for input in [
                 String::new(),
                 "中文输入".into(),
+                "/the".into(),
                 "中文\n第二行 abc".into(),
                 "长输入".repeat(200),
             ] {
@@ -37,19 +46,32 @@ fn three_regions_and_native_caret_survive_multiline_cjk_and_resizing() {
                 let caret = terminal.get_cursor_position().unwrap();
                 assert!(g.input.contains(caret), "{width}x{height}: {caret:?}");
                 assert!(caret.y < g.input.bottom() - 1);
-                assert!(screen(&terminal).contains("Agent · 输入"));
+                assert!(screen(&terminal).contains("Agent"));
                 if width >= 88 {
                     let tree = g.tree.unwrap();
-                    assert!(tree.right() <= g.content.x);
+                    assert_eq!(tree.right() - 1, g.content.x);
+                    assert_eq!(
+                        terminal.backend().buffer()[(g.content.x, g.content.y)].symbol(),
+                        "┬"
+                    );
+                    assert_eq!(
+                        terminal.backend().buffer()[(g.content.x, g.input.bottom() - 1)].symbol(),
+                        "┴"
+                    );
                 }
-                assert!(g.content.bottom() <= g.input.y);
+                assert_eq!(g.content.bottom() - 1, g.input.y);
+                assert_eq!(
+                    terminal.backend().buffer()[(g.content.x, g.input.y)].symbol(),
+                    "├"
+                );
+                assert_eq!(
+                    terminal.backend().buffer()[(g.content.right() - 1, g.input.y)].symbol(),
+                    "┤"
+                );
                 if theme == Theme::Auto {
                     for cell in &terminal.backend().buffer().content {
-                        assert_eq!(
-                            cell.bg,
-                            Color::Reset,
-                            "auto must inherit the terminal background"
-                        );
+                        assert!(matches!(cell.bg, Color::Reset | Color::Blue),
+                            "auto must inherit the terminal background outside selection highlights");
                         assert!(
                             !matches!(cell.fg, Color::Rgb(..)),
                             "auto must use the terminal palette"
