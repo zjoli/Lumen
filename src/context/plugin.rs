@@ -94,14 +94,17 @@ impl ContextWindowPlugin {
         messages: Vec<AgentMessage>,
         tools: &[ToolDeclaration],
     ) -> Result<PreparedRequest, AgentError> {
-        self.provider.prepare(ModelRequest {
-            messages,
-            tools: tools.to_vec(),
-            max_output_tokens: self
-                .config
-                .output_tokens
-                .min(self.provider.capabilities().max_output_tokens),
-        })
+        self.provider
+            .prepare(ModelRequest {
+                messages,
+                tools: tools.to_vec(),
+                max_output_tokens: self
+                    .config
+                    .output_tokens
+                    .min(self.provider.capabilities().max_output_tokens),
+                ..Default::default()
+            })
+            .map_err(Into::into)
     }
     async fn assemble(
         &self,
@@ -128,15 +131,14 @@ impl ContextWindowPlugin {
             }
         }
         let mut reset = old.config != config_key;
-        if reset {
+        let rebuild = old.config.is_empty() || old.projection.is_empty();
+        if rebuild {
             next.projection = snapshot
                 .messages
                 .iter()
                 .filter(|m| !matches!(m, AgentMessage::Custom { .. }))
                 .cloned()
                 .collect();
-            // Restore required loaded skills/state even across provider changes.
-            next.projection.extend(next.pins.values().cloned());
         } else {
             next.projection.extend(
                 snapshot.messages[old.through..]
@@ -145,9 +147,18 @@ impl ContextWindowPlugin {
                     .cloned(),
             );
         }
+        // A configuration change invalidates encoding, not committed compaction coverage.
+        // Replaying all raw history here would resurrect discarded native provider state.
+        if reset {
+            for pin in next.pins.values() {
+                if !next.projection.contains(pin) {
+                    next.projection.push(pin.clone());
+                }
+            }
+        }
         next.through = snapshot.messages.len();
         next.config = config_key;
-        for message in &snapshot.messages[if reset { 0 } else { old.through }..] {
+        for message in &snapshot.messages[if rebuild { 0 } else { old.through }..] {
             next.regions.entry(message_key(message)).or_insert(
                 if matches!(message, AgentMessage::System(_)) {
                     ContextRegion::Core
@@ -211,7 +222,14 @@ impl ContextWindowPlugin {
                 )
                 .await
             {
-                Ok((projection, summary, usage)) => {
+                Ok((projection, summary, usage, reports)) => {
+                    for mut report in reports {
+                        report.summary = true;
+                        ctx.events.push(AgentEvent::ModelRequestFinished {
+                            summary: true,
+                            report,
+                        });
+                    }
                     for usage in usage {
                         ctx.events.push(AgentEvent::CompactionUsageReported(usage));
                     }
@@ -232,13 +250,24 @@ impl ContextWindowPlugin {
                     // End event is emitted only after the durable commit below.
                     committed_summary = Some(summary);
                 }
-                Err(AgentError::Aborted) => {
-                    if force {
-                        self.runtime.request_compaction();
-                    }
-                    return Err(AgentError::Aborted);
-                }
                 Err(error) => {
+                    let (usage, reports) = error.observations();
+                    for usage in usage {
+                        ctx.events.push(AgentEvent::CompactionUsageReported(usage));
+                    }
+                    for mut report in reports {
+                        report.summary = true;
+                        ctx.events.push(AgentEvent::ModelRequestFinished {
+                            summary: true,
+                            report,
+                        });
+                    }
+                    if error.is_aborted() {
+                        if force {
+                            self.runtime.request_compaction();
+                        }
+                        return Err(error);
+                    }
                     next.projection = original;
                     ctx.events.push(AgentEvent::ContextDegraded {
                         reason: format!("compaction failed: {error}"),
@@ -329,7 +358,15 @@ impl ContextWindowPlugin {
         tools: &[ToolDeclaration],
         budget: usize,
         cancel: tokio_util::sync::CancellationToken,
-    ) -> Result<(Vec<AgentMessage>, String, Vec<TokenUsage>), AgentError> {
+    ) -> Result<
+        (
+            Vec<AgentMessage>,
+            String,
+            Vec<TokenUsage>,
+            Vec<ModelRequestReport>,
+        ),
+        AgentError,
+    > {
         let messages = &state.projection;
         let user_boundaries: Vec<usize> = messages
             .iter()
@@ -362,6 +399,8 @@ impl ContextWindowPlugin {
             .summary_tokens
             .min(target.saturating_sub(retained_size).max(256));
         let mut summary = None;
+        let mut all_usage = vec![];
+        let mut all_reports = vec![];
         for attempt in 0..2 {
             let limit = (summary_budget / (attempt + 1))
                 .max(256)
@@ -373,6 +412,7 @@ impl ContextWindowPlugin {
                         messages: source.clone(),
                         tools: tools.to_vec(),
                         max_output_tokens: limit,
+                        ..Default::default()
                     },
                     limit,
                     cancel.clone(),
@@ -383,15 +423,26 @@ impl ContextWindowPlugin {
                 Ok(Ok(output))
                     if !output.text.trim().is_empty() && estimate_tokens(&output.text) <= limit =>
                 {
+                    all_usage.extend(output.usage.clone());
+                    all_reports.extend(output.reports.clone());
                     summary = Some(output);
                     break;
                 }
-                Ok(Err(AgentError::Aborted)) => return Err(AgentError::Aborted),
+                Ok(Err(error)) => {
+                    if error.is_aborted() || error.provider_error().is_some() {
+                        return Err(error.with_observations(all_usage, all_reports));
+                    }
+                    let (usage, reports) = error.observations();
+                    all_usage.extend(usage);
+                    all_reports.extend(reports);
+                }
                 _ => (),
             }
         }
-        let output = summary
-            .ok_or_else(|| AgentError::Context("summary failed after two attempts".into()))?;
+        let output = summary.ok_or_else(|| {
+            AgentError::Context("summary failed after two attempts".into())
+                .with_observations(all_usage.clone(), all_reports.clone())
+        })?;
         let summary = output.text;
         let mut projection = vec![];
         // Conservative first version: preserve original user requests verbatim, in order.
@@ -410,17 +461,20 @@ impl ContextWindowPlugin {
         projection.extend_from_slice(&messages[split..]);
         validate_tool_groups(&projection)?;
         let before = self
-            .prepare(messages.to_vec(), tools)?
+            .prepare(messages.to_vec(), tools)
+            .map_err(|e| e.with_observations(all_usage.clone(), all_reports.clone()))?
             .estimated_input_tokens();
         let after = self
-            .prepare(projection.clone(), tools)?
+            .prepare(projection.clone(), tools)
+            .map_err(|e| e.with_observations(all_usage.clone(), all_reports.clone()))?
             .estimated_input_tokens();
         if after > budget || after.saturating_add((budget / 20).min(1000)) >= before {
-            return Err(AgentError::Context(
-                "summary did not release enough space".into(),
-            ));
+            return Err(
+                AgentError::Context("summary did not release enough space".into())
+                    .with_observations(all_usage, all_reports),
+            );
         }
-        Ok((projection, summary, output.usage))
+        Ok((projection, summary, all_usage, all_reports))
     }
 }
 fn is_original_user(message: &AgentMessage, raw: &[AgentMessage]) -> bool {

@@ -44,7 +44,7 @@ pub fn validate_session_file(path: &str, bytes: &[u8]) -> R<()> {
         if let AgentMessage::Custom { kind, content } = record {
             if kind == "lumen.segment_open" {
                 let open: SegmentOpen = serde_json::from_value(content.clone())?;
-                if open.schema_version != 1 {
+                if !matches!(open.schema_version, 1 | 2) {
                     return Err(E::UnsupportedSchema(open.schema_version));
                 }
                 if index != 0 || open.session_id != parts[1] || open.segment_id != id {
@@ -53,7 +53,7 @@ pub fn validate_session_file(path: &str, bytes: &[u8]) -> R<()> {
             }
             if kind == "lumen.run_end" {
                 let end: RunEnd = serde_json::from_value(content.clone())?;
-                if end.schema_version != 1 {
+                if !matches!(end.schema_version, 1 | 2) {
                     return Err(E::UnsupportedSchema(end.schema_version));
                 }
                 if index + 1 != records.len() {
@@ -108,7 +108,7 @@ pub fn replay(session_id: &str, segments: &[StoredSegment]) -> R<ReplayReport> {
             let _ = kind;
             match serde_json::from_value::<SegmentOpen>(content.clone()) {
                 Ok(open)
-                    if open.schema_version == 1
+                    if matches!(open.schema_version, 1 | 2)
                         && open.session_id == session_id
                         && open.segment_id == segment.id =>
                 {
@@ -236,7 +236,8 @@ pub fn replay(session_id: &str, segments: &[StoredSegment]) -> R<ReplayReport> {
                             continue;
                         }
                     };
-                    if end.schema_version != 1 || run_id.as_ref() != Some(&end.run_id) {
+                    if !matches!(end.schema_version, 1 | 2) || run_id.as_ref() != Some(&end.run_id)
+                    {
                         report.health = SessionHealth::Corrupt;
                         report.diagnostics.push("run_end identity mismatch".into());
                     }
@@ -267,6 +268,13 @@ pub fn replay(session_id: &str, segments: &[StoredSegment]) -> R<ReplayReport> {
                         text,
                     });
                 }
+            }
+            if matches!(&message,AgentMessage::Assistant(a) if a.provider_replay.as_ref().is_some_and(|r|r.schema_version != 1))
+            {
+                report.health = SessionHealth::Unsupported;
+                report
+                    .diagnostics
+                    .push(format!("{id}: unsupported native replay schema"));
             }
             report.records.push(message);
         }

@@ -30,6 +30,7 @@ async fn completes_text_turn_and_preserves_events() {
     let provider = MockProvider::new(vec![AssistantMessage {
         content: vec![ContentPart::Text("hello".into())],
         tool_calls: vec![],
+        ..Default::default()
     }]);
     let agent = AgentLoop::new(Arc::new(provider));
     let mut state = AgentState {
@@ -69,10 +70,12 @@ async fn executes_tool_and_requests_next_turn() {
                 name: "echo".into(),
                 arguments: json!({"text":"ok"}),
             }],
+            ..Default::default()
         },
         AssistantMessage {
             content: vec![ContentPart::Text("done".into())],
             tool_calls: vec![],
+            ..Default::default()
         },
     ]);
     let mut agent = AgentLoop::new(Arc::new(provider));
@@ -105,6 +108,7 @@ fn text_response() -> AssistantMessage {
     AssistantMessage {
         content: vec![ContentPart::Text("done".into())],
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 fn call_response(name: &str, arguments: serde_json::Value) -> AssistantMessage {
@@ -115,6 +119,7 @@ fn call_response(name: &str, arguments: serde_json::Value) -> AssistantMessage {
             name: name.into(),
             arguments,
         }],
+        ..Default::default()
     }
 }
 fn state() -> AgentState {
@@ -216,7 +221,7 @@ impl ModelProvider for Hanging {
         &self,
         _: ModelRequest,
         _: CancellationToken,
-    ) -> Result<ModelEventStream, AgentError> {
+    ) -> Result<ModelEventStream, ProviderError> {
         std::future::pending().await
     }
 }

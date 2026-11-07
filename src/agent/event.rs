@@ -21,6 +21,14 @@ pub enum AgentEvent {
         manifest: String,
     },
     UsageReported(super::TokenUsage),
+    ModelRequestFinished {
+        summary: bool,
+        report: super::ModelRequestReport,
+    },
+    ToolArgumentsDelta {
+        key: String,
+        delta: String,
+    },
     CompactionUsageReported(super::TokenUsage),
     AgentStart,
     AgentEnd {

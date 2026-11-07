@@ -7,6 +7,7 @@ async fn main() -> Result<(), AgentError> {
     let provider = MockProvider::new(vec![AssistantMessage {
         content: vec![ContentPart::Text("Lumen Agent Loop is running.".into())],
         tool_calls: vec![],
+        ..Default::default()
     }]);
     let agent = AgentLoop::new(Arc::new(provider));
     let mut state = AgentState {

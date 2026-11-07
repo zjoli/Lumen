@@ -36,7 +36,7 @@ Esc 转入内容浏览，i 返回输入。F6、Shift+Tab 分别顺序、反向�
 
 ## 运行与验证
 
-`cargo run --bin lumen-tui -- --workspace /path/to/knowledge` 打开已有工作区。无工作区时可通过输入框执行 `/workspace init <路径>` 或 `/workspace open <路径>`。模型配置沿用 README 中的环境变量；未配置时明确标记演示模式。
+`cargo run --bin lumen-tui -- --workspace /path/to/knowledge` 打开已有工作区。无工作区时可通过输入框执行 `/workspace init <路径>` 或 `/workspace open <路径>`。模型连接与别名配置见 [供应商配置](providers.md)，旧环境变量入口继续兼容；演示模型使用 mock。
 
 全屏界面将渲染、输入与后台工作分离，退出前取消任务并关闭工作区、完成会话归档。正常退出、错误返回和 panic 均恢复终端。管道和 `--plain` 保留原有行模式。
 
@@ -55,3 +55,5 @@ Esc 转入内容浏览，i 返回输入。F6、Shift+Tab 分别顺序、反向�
 独立模式使用 `LUMEN_SESSION_DIR` 或平台应用数据目录，启动恢复最近会话。旧单文件通过 `/session preview <path>` 浏览、`/session import <path>` 导入，原件保留；`/session inspect <id>` 可只读查看归档或存在恢复诊断的会话。
 
 模型窗口容量、最大输出、协议格式及 Skill 目录配置见 [README](../README.md)。
+
+`/models` 查看模型别名、实际 ID 和容量，`/providers` 查看连接与协议；这两个命令运行中也可使用，不要求读取密钥。`/model <alias>` 在空闲时切换模型，缺少凭据只影响发送；配置错误不会自动转入演示模型。输出达到上限、拒绝和取消显示不同提示，未完成的工具参数不会执行。

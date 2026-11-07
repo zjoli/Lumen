@@ -17,6 +17,7 @@ fn answer(s: &str) -> AssistantMessage {
     AssistantMessage {
         content: user(s),
         tool_calls: vec![],
+        ..Default::default()
     }
 }
 fn state() -> AgentState {
@@ -36,7 +37,7 @@ impl ModelProvider for Recording {
         &self,
         request: ModelRequest,
         _: CancellationToken,
-    ) -> Result<ModelEventStream, AgentError> {
+    ) -> Result<ModelEventStream, ProviderError> {
         self.requests.lock().unwrap().push(request);
         let a = self
             .answers
@@ -44,7 +45,7 @@ impl ModelProvider for Recording {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| answer("done"));
-        Ok(Box::pin(stream::iter(vec![ModelEvent::Complete(a)])))
+        Ok(Box::pin(stream::iter(vec![Ok(ModelEvent::completed(a))])))
     }
 }
 struct ShortSummary;
@@ -381,6 +382,7 @@ async fn large_tool_output_is_archived_with_bounded_visible_result_and_legal_pai
                 name: "big".into(),
                 arguments: json!({}),
             }],
+            ..Default::default()
         });
     let mut a = agent(session.clone(), provider.clone());
     a.register_tool(Arc::new(BigTool));
@@ -437,6 +439,7 @@ async fn interrupted_call_is_closed_with_unknown_result_and_never_executed_again
                 name: "big".into(),
                 arguments: json!({}),
             }],
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -491,7 +494,7 @@ async fn skills_load_deduplicate_retire_reactivate_and_resources_cannot_escape()
                     if i == 0 { calls.push(ToolCall { id:"progress".into(), name:"skill_progress".into(), arguments:json!({"id":"test:learn","step":"exercise 2","completed":["exercise 1"]}) }); }
                     calls
                 },
-            });
+             ..Default::default()});
         provider.answers.lock().unwrap().push_back(answer("done"));
         let mut a = agent(session.clone(), provider.clone());
         a.register_plugin(registry.clone());
@@ -541,6 +544,7 @@ async fn skills_load_deduplicate_retire_reactivate_and_resources_cannot_escape()
                 name: "skill_resource".into(),
                 arguments: json!({"id":"test:learn","path":"../../outside"}),
             }],
+            ..Default::default()
         });
     let mut a = agent(session.clone(), provider.clone());
     registry.register_tools(&mut a, session);
@@ -637,6 +641,7 @@ async fn completed_tool_result_is_durable_even_if_after_hook_is_cancelled() {
                 name: "big".into(),
                 arguments: json!({}),
             }],
+            ..Default::default()
         });
     let mut a = agent(session.clone(), provider);
     a.register_tool(Arc::new(BigTool));
@@ -697,15 +702,24 @@ impl ModelProvider for SummaryProvider {
         ModelCapabilities {
             context_tokens: 6000,
             max_output_tokens: 512,
+            ..Default::default()
         }
     }
     async fn stream(
         &self,
         request: ModelRequest,
         _: CancellationToken,
-    ) -> Result<ModelEventStream, AgentError> {
+    ) -> Result<ModelEventStream, ProviderError> {
         self.requests.lock().unwrap().push(request);
-        Ok(Box::pin(stream::iter(vec![ModelEvent::Usage(TokenUsage{input_tokens:Some(100),output_tokens:Some(20),..Default::default()}),ModelEvent::Complete(answer(&json!({"scope":"prior","completed":[],"decisions":[],"failed_attempts":[],"open_questions":[],"next_steps":[],"evidence_refs":[],"coverage":[]}).to_string()))])))
+        let mut response:ModelResponse=answer(&json!({"scope":"prior","completed":[],"decisions":[],"failed_attempts":[],"open_questions":[],"next_steps":[],"evidence_refs":[],"coverage":[]}).to_string()).into();
+        response.usage = TokenUsage {
+            input_tokens: Some(100),
+            output_tokens: Some(20),
+            ..Default::default()
+        };
+        Ok(Box::pin(stream::iter(vec![Ok(ModelEvent::completed(
+            response,
+        ))])))
     }
 }
 #[tokio::test]
@@ -723,6 +737,7 @@ async fn oversized_summary_is_split_into_bounded_legal_requests_with_usage_and_t
                 name: "lookup".into(),
                 arguments: json!({}),
             }],
+            ..Default::default()
         }));
         messages.push(AgentMessage::ToolResult(ToolResultMessage {
             tool_call_id: format!("call{i}"),
@@ -742,6 +757,7 @@ async fn oversized_summary_is_split_into_bounded_legal_requests_with_usage_and_t
                 messages,
                 tools: tools.clone(),
                 max_output_tokens: 512,
+                ..Default::default()
             },
             512,
             c(),
@@ -879,6 +895,7 @@ async fn cancellation_during_skill_state_commit_cannot_diverge_memory_from_journ
                 name: "skill_load".into(),
                 arguments: json!({"id":"test:learn"}),
             }],
+            ..Default::default()
         });
     let mut a = agent(runtime.clone(), provider);
     registry.register_tools(&mut a, runtime.clone());

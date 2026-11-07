@@ -137,13 +137,13 @@ impl ModelProvider for TestProvider {
         &self,
         request: ModelRequest,
         _: CancellationToken,
-    ) -> Result<ModelEventStream, AgentError> {
+    ) -> Result<ModelEventStream, ProviderError> {
         self.requests.lock().unwrap().push(request);
         let wait = self.wait;
         Ok(Box::pin(async_stream::stream! {
-            yield ModelEvent::Start; yield ModelEvent::TextDelta("并发事务的解释。".into());
+            yield Ok(ModelEvent::Started); yield Ok(ModelEvent::TextDelta("并发事务的解释。".into()));
             if wait { std::future::pending::<()>().await; }
-            yield ModelEvent::Complete(AssistantMessage { content:vec![ContentPart::Text("并发事务的解释。".into())],tool_calls:vec![] });
+            yield Ok(ModelEvent::completed(AssistantMessage { content:vec![ContentPart::Text("并发事务的解释。".into())],tool_calls:vec![] , ..Default::default()}));
         }))
     }
 }
@@ -536,6 +536,7 @@ async fn switching_sessions_restores_history_draft_reading_and_rejects_stale_eve
             AssistantMessage {
                 content: vec![ContentPart::Text("stale result".into())],
                 tool_calls: vec![],
+                ..Default::default()
             },
         ))),
     });
@@ -573,6 +574,7 @@ async fn paged_history_deduplicates_and_readonly_catalog_is_available_during_run
                     AgentMessage::Assistant(AssistantMessage {
                         content: vec![ContentPart::Text(format!("answer-{index}"))],
                         tool_calls: vec![],
+                        ..Default::default()
                     })
                 },
             })
@@ -642,4 +644,97 @@ async fn paged_history_deduplicates_and_readonly_catalog_is_available_during_run
     let result = rt.operation.take().unwrap().await;
     rt.completed(result).unwrap();
     rt.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn provider_commands_select_alias_without_credentials_and_preserve_selection_on_error() {
+    let (_dir, w, _) = fixture().await;
+    let value = serde_json::json!({"schema_version":1,"default_model":"research","providers":{"company":{"protocol":"openai_responses","base_url":"https://example.invalid/v1","state_scope":"account","auth":{"kind":"env","variable":format!("LUMEN_ABSENT_{}",uuid::Uuid::now_v7().simple())}}},"models":{"research":{"provider":"company","model_id":"actual-id","capabilities":{"context_tokens":64000,"max_output_tokens":4096,"tools":true}}}});
+    std::fs::write(
+        w.root().join(".lumen/providers.yaml"),
+        serde_yaml_ng::to_string(&value).unwrap(),
+    )
+    .unwrap();
+    let mut app = Application::new();
+    app.workspace = Some(w.clone());
+    app.command(Command::New, CancellationToken::new())
+        .await
+        .unwrap();
+    let active = app.manager.as_ref().unwrap().active().unwrap();
+    assert_eq!(active.metadata().0.model.model, "research");
+    assert!(app
+        .command(Command::Models, CancellationToken::new())
+        .await
+        .unwrap()
+        .contains("research"));
+    assert!(app
+        .command(Command::Providers, CancellationToken::new())
+        .await
+        .unwrap()
+        .contains("company"));
+    let revision = active.metadata().1;
+    assert!(app
+        .command(
+            Command::Model(Some("missing".into())),
+            CancellationToken::new()
+        )
+        .await
+        .is_err());
+    assert_eq!(active.metadata().1, revision);
+    let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+    assert!(app
+        .chat("hello".into(), CancellationToken::new(), tx)
+        .await
+        .is_err());
+    assert!(active
+        .runtime()
+        .unwrap()
+        .snapshot()
+        .await
+        .messages
+        .is_empty());
+    assert_eq!(active.metadata().0.model.model, "research");
+    app.command(
+        Command::Model(Some("mock".into())),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+    app.chat("demo".into(), CancellationToken::new(), tx)
+        .await
+        .unwrap();
+    assert!(active
+        .runtime()
+        .unwrap()
+        .snapshot()
+        .await
+        .messages
+        .iter()
+        .any(|m| matches!(m, AgentMessage::Assistant(_))));
+    assert!(service::session_read_command(&Command::Models));
+    assert!(service::read_session_command(
+        app.manager.as_ref().unwrap().repository().clone(),
+        None,
+        Command::Providers
+    )
+    .await
+    .is_ok());
+    app.command(Command::New, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        app.manager
+            .as_ref()
+            .unwrap()
+            .active()
+            .unwrap()
+            .metadata()
+            .0
+            .model
+            .model,
+        "research"
+    );
+    app.manager.as_mut().unwrap().close(None).unwrap();
+    w.close(CancellationToken::new()).await.unwrap();
 }

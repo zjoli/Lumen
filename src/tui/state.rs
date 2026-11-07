@@ -79,6 +79,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/session preview", "只读浏览旧 JSONL"),
     ("/clear", "清空对话显示"),
     ("/model", "查看或切换模型"),
+    ("/models", "列出模型别名与能力"),
+    ("/providers", "列出供应商连接"),
     ("/status", "查看工作区状态"),
     ("/context", "查看上下文窗口与活跃 Skill"),
     ("/compact", "安排上下文压缩"),
@@ -451,6 +453,10 @@ impl Ui {
             AgentEvent::ToolExecutionStart(call) => {
                 self.activity = format!("正在执行 {}", text::clean(&call.name))
             }
+            AgentEvent::ToolCallStart(call) => {
+                self.activity = format!("正在准备工具调用 {}", text::clean(&call.name))
+            }
+            AgentEvent::ToolArgumentsDelta { .. } => self.activity = "正在准备工具参数…".into(),
             AgentEvent::ToolExecutionEnd(result) => {
                 self.activity = if result.is_error {
                     "正在处理工具错误"
@@ -462,6 +468,12 @@ impl Ui {
             AgentEvent::AgentEnd {
                 reason: StopReason::Aborted,
             } => self.notify("任务已停止，已收到的内容仍保留。", false),
+            AgentEvent::AgentEnd {
+                reason: StopReason::OutputLimit,
+            } => self.notify("模型输出达到上限，本轮工具未执行。", false),
+            AgentEvent::AgentEnd {
+                reason: StopReason::Refused,
+            } => self.notify("模型拒绝了本轮请求。", false),
             _ => (),
         }
     }

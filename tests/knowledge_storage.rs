@@ -611,6 +611,7 @@ async fn embeddings_tools_and_context_plugin() {
     let mut agent = AgentLoop::new(Arc::new(MockProvider::new(vec![AssistantMessage {
         content: vec![ContentPart::Text("done".into())],
         tool_calls: vec![],
+        ..Default::default()
     }])));
     agent.register_plugin(Arc::new(RetrievalPlugin::new(w.clone())));
     let mut state = AgentState {

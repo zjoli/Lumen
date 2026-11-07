@@ -112,7 +112,7 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 作者可通过 `LUMEN_AUTHOR_NAME`、`LUMEN_AUTHOR_EMAIL` 设置，或通过 `/workspace config author_name "Your Name"` 和 `author_email` 修改。`/workspace config credential_ref <name>` 引用系统密钥存储中服务名 `lumen` 对应的凭据；HTTPS 使用令牌，SSH 可配置 `ssh_private_key`，主机必须已在 `~/.ssh/known_hosts` 中受信任。
 
-模型对话使用 `LUMEN_MODEL_ENDPOINT`、`LUMEN_MODEL_KEY`、`LUMEN_MODEL`；未配置时保留本地命令与示例响应。向量、重排、摘要通过 Rust provider trait 注入；无 provider 时检索降级为全文，概览使用确定性导航。后台索引任务随工作区关闭而取消并等待退出。
+模型对话通过本机 `.lumen/providers.yaml` 统一配置连接、协议、模型别名和能力，支持 OpenAI Chat Completions、Responses 与 Anthropic Messages 的 SSE 流式调用。`/models`、`/providers` 查看配置，`/model <alias>` 选择模型。完整示例和旧配置兼容规则见 [供应商配置](docs/providers.md)。向量、重排、摘要通过 Rust provider trait 注入；无 provider 时检索降级为全文，概览使用确定性导航。后台索引任务随工作区关闭而取消并等待退出。
 
 上下文由统一插件管理，检索与 Skill 按需追加，达到水位时生成结构化摘要并提交可恢复检查点。`/context` 查看窗口分区与预留，`/compact` 安排下一请求前压缩，`/skills` 查看本地 Skill。
 
@@ -120,9 +120,9 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 工作区会话保存于 `sessions/<id>/session.yaml` 和不可变 JSONL 片段。无工作区时使用 `LUMEN_SESSION_DIR` 指定的目录，默认位于平台应用数据目录下的 `lumen/`；启动恢复最近会话。旧 `LUMEN_SESSION` 文件保留原样，目标目录默认为同路径的 `.sessions` 目录；用 `/session preview <file>` 只读浏览、`/session import <file>` 幂等导入，再 `/resume <id>` 继续。
 
-会话元数据保存模型名称、协议和窗口设置，凭据只在发送时解析。默认 profile 使用上述环境变量；额外 profile 可在设备本地 `.lumen/model-profiles.yaml` 配置，例如 `tutor: { endpoint: "https://example.com/v1/chat/completions", api_key_env: "LUMEN_TUTOR_KEY" }`，通过 SessionMetadata 的 `model.profile_ref` 选择。该文件不进入 Git，也不保存密钥。缺失 profile 或凭据时历史仍可阅读，真实模型会话不会自动降级成另一个模型。
+新会话元数据保存模型选择和窗口设置；每次运行冻结实际模型配置，凭据只在运行前解析。旧 `LUMEN_MODEL_ENDPOINT`、`LUMEN_MODEL_KEY`、`LUMEN_MODEL` 和 `.lumen/model-profiles.yaml` 仍可使用，旧会话保持原来的协议映射。缺失配置或凭据时历史仍可阅读；`/model mock` 显式选择演示模型，真实请求失败不会自动降级。
 
-`LUMEN_CONTEXT_TOKENS` 配置模型实际窗口容量（默认 128000），`LUMEN_OUTPUT_TOKENS` 配置最大输出（默认不超过 4096 和窗口的 1/8）；小窗口会同步缩小工具与安全预留。首版按 UTF-8 字节和协议开销保守估算 token，需按所用模型配置容量；API usage 单独报告实际用量。`LUMEN_MODEL_FORMAT=anthropic` 可选 Anthropic Messages，默认使用 OpenAI 兼容 Chat Completions；`LUMEN_PROMPT_CACHE=false` 关闭显式缓存标记。当前 HTTP adapter 保留完整响应模式，尚未接入 SSE。
+`LUMEN_CONTEXT_TOKENS` 设置会话窗口上限（默认 128000），`LUMEN_OUTPUT_TOKENS` 设置输出上限（默认不超过 4096 和窗口的 1/8）；实际预算同时受模型配置约束，小窗口会缩小工具与安全预留。首版按 UTF-8 字节和协议开销估算 token，真实 API usage 单独报告。旧配置的 `LUMEN_MODEL_FORMAT=anthropic` 选择 Messages，`LUMEN_PROMPT_CACHE=false` 停止申请显式缓存；旧 endpoint/profile 保留 JSON 模式，新配置默认 SSE。
 
 Skill 从 `~/.agents/skills/`、工作区 `.agents/skills/` 和 `LUMEN_SKILLS_DIR` 指定的额外目录发现。模型通过 `skill_search`、`skill_load`、`skill_resource`、`skill_progress`、`skill_finish` 使用工作流；活跃正文和步骤随检查点恢复。工作区 `LUMEN.md`、`AGENTS.md` 可提供持续指导，相关学习状态从已有学习证据推导。
 

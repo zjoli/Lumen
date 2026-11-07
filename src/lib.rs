@@ -2,6 +2,7 @@ pub mod agent;
 pub mod commands;
 pub mod context;
 pub mod knowledge;
+pub mod provider;
 pub mod retrieval;
 pub mod session;
 pub mod skills;

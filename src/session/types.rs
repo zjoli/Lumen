@@ -10,12 +10,12 @@ pub struct SessionIdentity {
     pub store_id: String,
     pub session_id: String,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SessionModel {
     pub profile_ref: String,
     pub model: String,
     pub format: String,
+    pub overrides: crate::provider::GenerationOverrides,
 }
 impl Default for SessionModel {
     fn default() -> Self {
@@ -23,7 +23,103 @@ impl Default for SessionModel {
             profile_ref: "default".into(),
             model: "mock".into(),
             format: "openai".into(),
+            overrides: Default::default(),
         }
+    }
+}
+impl SessionModel {
+    pub fn selection(
+        &self,
+    ) -> Result<crate::provider::ModelSelection, crate::provider::ProviderError> {
+        use crate::provider::*;
+        if self.model == "mock" && matches!(self.format.as_str(), "openai" | "anthropic") {
+            return Ok(ModelSelection::Mock);
+        }
+        if self.model.trim().is_empty() {
+            return Err(ProviderError::configuration("empty model selection"));
+        }
+        Ok(match self.format.as_str() {
+            "reference" => ModelSelection::Reference {
+                model_ref: self.model.clone(),
+                overrides: self.overrides.clone(),
+            },
+            "openai" | "anthropic" if !self.profile_ref.is_empty() => ModelSelection::Legacy {
+                profile_ref: self.profile_ref.clone(),
+                model: self.model.clone(),
+                format: if self.format == "openai" {
+                    LegacyFormat::Openai
+                } else {
+                    LegacyFormat::Anthropic
+                },
+            },
+            _ => {
+                return Err(ProviderError::configuration(
+                    "invalid legacy model format/profile",
+                ))
+            }
+        })
+    }
+    pub fn from_selection(s: crate::provider::ModelSelection) -> Self {
+        use crate::provider::*;
+        match s {
+            ModelSelection::Mock => Self::default(),
+            ModelSelection::Reference {
+                model_ref,
+                overrides,
+            } => Self {
+                profile_ref: "default".into(),
+                model: model_ref,
+                format: "reference".into(),
+                overrides,
+            },
+            ModelSelection::Legacy {
+                profile_ref,
+                model,
+                format,
+            } => Self {
+                profile_ref,
+                model,
+                format: match format {
+                    LegacyFormat::Openai => "openai",
+                    LegacyFormat::Anthropic => "anthropic",
+                }
+                .into(),
+                overrides: Default::default(),
+            },
+        }
+    }
+}
+impl Serialize for SessionModel {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.selection()
+            .map_err(serde::ser::Error::custom)?
+            .serialize(s)
+    }
+}
+impl<'de> Deserialize<'de> for SessionModel {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Old {
+            profile_ref: String,
+            model: String,
+            format: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            New(crate::provider::ModelSelection),
+            Old(Old),
+        }
+        Ok(match Wire::deserialize(d)? {
+            Wire::New(s) => Self::from_selection(s),
+            Wire::Old(o) => Self {
+                profile_ref: o.profile_ref,
+                model: o.model,
+                format: o.format,
+                overrides: Default::default(),
+            },
+        })
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -59,7 +155,7 @@ pub struct SessionMetadata {
 impl SessionMetadata {
     pub fn new(title: Option<String>, model: SessionModel, context: SessionContext) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             id: format!("session_{}", uuid::Uuid::now_v7()),
             created_at: now(),
             title: title.clone().unwrap_or_else(|| "新会话".into()),
@@ -77,14 +173,14 @@ impl SessionMetadata {
     }
     pub fn validate(&self) -> R<()> {
         crate::workspace::validate_typed_id(&self.id, "session")?;
-        if self.schema_version != 1 {
+        if !matches!(self.schema_version, 1 | 2) {
             return Err(E::UnsupportedSchema(self.schema_version));
         }
         if self.title.trim().is_empty()
             || self.title.chars().count() > 200
             || self.model.profile_ref.is_empty()
             || self.model.model.is_empty()
-            || !matches!(self.model.format.as_str(), "openai" | "anthropic")
+            || self.model.selection().is_err()
             || self.context.context_tokens == 0
             || self.context.output_tokens == 0
             || self.context.output_tokens >= self.context.context_tokens
@@ -213,6 +309,8 @@ pub struct SegmentOpen {
     pub model: Option<SessionModel>,
     #[serde(default)]
     pub context: Option<SessionContext>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<crate::provider::ResolvedModelDescriptor>,
     pub started_at: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -230,6 +328,10 @@ pub struct RunEnd {
     pub usage: Vec<TokenUsage>,
     #[serde(default)]
     pub compaction_usage: Vec<TokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_error: Option<crate::provider::ProviderError>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requests: Vec<crate::agent::ModelRequestReport>,
 }
 #[derive(Clone, Debug)]
 pub struct StoredSegment {

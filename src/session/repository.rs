@@ -22,6 +22,14 @@ pub struct SessionLease {
     _file: fs::File,
     pub identity: SessionIdentity,
 }
+impl Drop for SessionLease {
+    fn drop(&mut self) {
+        // A concurrently spawned child can briefly inherit the open file description
+        // before exec closes CLOEXEC descriptors. Closing only our descriptor then
+        // leaves flock held in that child; explicitly release the completed lease.
+        let _ = fs2::FileExt::unlock(&self._file);
+    }
+}
 pub struct LoadedSession {
     pub metadata: SessionMetadata,
     pub revision: String,
@@ -435,5 +443,25 @@ impl TranscriptWriter for ManagedWriter {
             .append(&self.session_id, &self.segment_id, message)
             .await
             .map_err(|e| crate::agent::AgentError::Session(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+    #[test]
+    fn dropping_lease_unlocks_even_if_an_inherited_descriptor_remains_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = SessionRepository::standalone(dir.path()).unwrap();
+        let id = format!("session_{}", uuid::Uuid::now_v7());
+        let lease = repository.lease(&id).unwrap();
+        let inherited = lease._file.try_clone().unwrap();
+        assert!(repository.lease(&id).is_err());
+        drop(lease);
+        let next = repository.lease(&id).unwrap();
+        drop(inherited);
+        assert!(repository.lease(&id).is_err());
+        drop(next);
+        assert!(repository.lease(&id).is_ok());
     }
 }

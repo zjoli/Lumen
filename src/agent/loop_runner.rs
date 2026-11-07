@@ -23,6 +23,9 @@ pub struct AgentLoop {
     session: Option<Arc<SessionRuntime>>,
 }
 impl AgentLoop {
+    pub fn provider(&self) -> &Arc<dyn ModelProvider> {
+        &self.provider
+    }
     pub fn new(provider: Arc<dyn ModelProvider>) -> Self {
         Self {
             provider,
@@ -85,7 +88,7 @@ impl AgentLoop {
             .await;
         let reason = match &outcome {
             Ok(r) => r.clone(),
-            Err(AgentError::Aborted) => StopReason::Aborted,
+            Err(error) if error.is_aborted() => StopReason::Aborted,
             Err(_) => StopReason::ModelError,
         };
         if let Err(error) = &outcome {
@@ -301,6 +304,7 @@ impl AgentLoop {
                     messages,
                     tools: tools.clone(),
                     max_output_tokens: self.provider.capabilities().max_output_tokens,
+                    ..Default::default()
                 })?
             };
             if prepared.provider_key != self.provider.configuration_key()
@@ -315,36 +319,93 @@ impl AgentLoop {
                 return Err(AgentError::Aborted);
             }
             let mut stream = bounded(
-                self.provider.stream_prepared(prepared, cancel.clone()),
+                async {
+                    self.provider
+                        .stream_prepared(prepared, cancel.clone())
+                        .await
+                        .map_err(AgentError::from)
+                },
                 cancel,
                 deadline,
             )
             .await?;
-            let mut assistant = None;
+            let mut response = None;
             loop {
                 let event = bounded(async { Ok(stream.next().await) }, cancel, deadline).await?;
                 let Some(event) = event else {
                     break;
                 };
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        if let Some(usage) = &error.observed_usage {
+                            events.push(AgentEvent::UsageReported(usage.as_ref().clone()));
+                        }
+                        return Err(error.into());
+                    }
+                };
                 match event {
                     ModelEvent::TextDelta(delta) => events.push(AgentEvent::MessageDelta { delta }),
-                    ModelEvent::ToolCall(call) => events.push(AgentEvent::ToolCallStart(call)),
-                    ModelEvent::Complete(message) => {
-                        assistant = Some(message);
+                    ModelEvent::ToolCallStarted { id, name, .. } => {
+                        events.push(AgentEvent::ToolCallStart(ToolCall {
+                            id,
+                            name,
+                            arguments: serde_json::Value::Null,
+                        }))
+                    }
+                    ModelEvent::ToolArgumentsDelta { key, delta } => {
+                        events.push(AgentEvent::ToolArgumentsDelta { key, delta })
+                    }
+                    ModelEvent::Completed(completed) => {
+                        response = Some(*completed);
                         break;
                     }
-                    ModelEvent::Error(error) => return Err(AgentError::Model(error)),
-                    ModelEvent::Usage(usage) => events.push(AgentEvent::UsageReported(usage)),
-                    ModelEvent::Start => events.push(AgentEvent::MessageStart(
-                        AgentMessage::Assistant(AssistantMessage {
-                            content: vec![],
-                            tool_calls: vec![],
-                        }),
+                    ModelEvent::Started => events.push(AgentEvent::MessageStart(
+                        AgentMessage::Assistant(AssistantMessage::default()),
                     )),
                 }
             }
-            let assistant = assistant
+            let response = response
                 .ok_or_else(|| AgentError::Model("provider ended without a response".into()))?;
+            events.push(AgentEvent::ModelRequestFinished {
+                summary: false,
+                report: response.report(self.provider.descriptor()),
+            });
+            events.push(AgentEvent::UsageReported(response.usage));
+            let finish = response.finish_reason;
+            let mut assistant = response.message;
+            if assistant.completion.is_none() {
+                assistant.completion = Some(ModelCompletion {
+                    finish_reason: finish.clone(),
+                    request_id: response.request_id,
+                    response_id: response.response_id,
+                });
+            }
+            match &finish {
+                ModelFinishReason::OutputLimit | ModelFinishReason::Refusal => {
+                    assistant.tool_calls.clear();
+                    assistant.provider_replay = None;
+                }
+                ModelFinishReason::Stop if !assistant.tool_calls.is_empty() => {
+                    return Err(crate::provider::ProviderError::protocol(
+                        "tools without tool finish reason",
+                    )
+                    .into())
+                }
+                ModelFinishReason::ToolCalls if assistant.tool_calls.is_empty() => {
+                    return Err(crate::provider::ProviderError::protocol(
+                        "tool finish without calls",
+                    )
+                    .into())
+                }
+                ModelFinishReason::Other(_) => {
+                    return Err(crate::provider::ProviderError::protocol(
+                        "unsupported finish reason",
+                    )
+                    .into())
+                }
+                _ => (),
+            }
             let mut call_ids = BTreeSet::new();
             if assistant
                 .tool_calls
@@ -360,6 +421,11 @@ impl AgentLoop {
             events.push(AgentEvent::MessageEnd(AgentMessage::Assistant(
                 assistant.clone(),
             )));
+            match finish {
+                ModelFinishReason::OutputLimit => return Ok(StopReason::OutputLimit),
+                ModelFinishReason::Refusal => return Ok(StopReason::Refused),
+                _ => (),
+            }
             let mut results = vec![];
             let mut terminate = !assistant.tool_calls.is_empty();
             for call in &assistant.tool_calls {

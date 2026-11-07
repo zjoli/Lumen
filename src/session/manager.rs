@@ -79,8 +79,9 @@ impl SessionManager {
         }
         Ok(())
     }
-    pub async fn create(&mut self, metadata: SessionMetadata) -> R<SessionView> {
+    pub async fn create(&mut self, mut metadata: SessionMetadata) -> R<SessionView> {
         self.idle()?;
+        metadata.schema_version = 2;
         metadata.validate()?;
         self.repo.save_metadata(&metadata, None).await?;
         self.switch(&metadata.id, false, None).await
@@ -366,10 +367,11 @@ impl SessionManager {
     }
     pub async fn update(
         &mut self,
-        metadata: SessionMetadata,
+        mut metadata: SessionMetadata,
         expected: &str,
     ) -> R<ManagedSessionInfo> {
         self.idle()?;
+        metadata.schema_version = 2;
         let id = metadata.id.clone();
         let _lease = if self
             .active

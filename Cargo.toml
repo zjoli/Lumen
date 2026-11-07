@@ -35,5 +35,5 @@ git2 = { version = "0.21", default-features = false, features = ["vendored-opens
 dbus = { version = "0.9", features = ["vendored"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net"] }
 tempfile = "3"

@@ -13,10 +13,14 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct AssistantMessage {
     pub content: Vec<ContentPart>,
     pub tool_calls: Vec<ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<super::ModelCompletion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_replay: Option<crate::provider::ProviderReplay>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -45,4 +49,6 @@ pub enum StopReason {
     ToolError,
     PluginRequested,
     MaxTurns,
+    OutputLimit,
+    Refused,
 }

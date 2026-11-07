@@ -283,7 +283,7 @@ Concrete implementations -> traits
 
 当前仓库还提供以下可插拔实现：
 
-- `HttpProvider::openai` 和 `HttpProvider::anthropic`：使用 reqwest 调用兼容 OpenAI Chat Completions 和 Anthropic Messages 的 HTTP endpoint；工具声明和 OpenAI tool calls 已转换为统一消息。生产环境应在此基础上补 SSE 增量解析、重试、速率限制和 provider-specific tool result。
+- `ProviderRegistry` 统一解析连接、模型和能力，三个独立适配器覆盖 Chat Completions、Responses 与 Messages；HTTP/SSE 输出统一的最终结果和增量事件。`HttpProvider::openai/anthropic` 保留旧 JSON 构造入口。详细边界、错误和兼容规则见 [供应商模块](provider-management.md)。
 - `SessionStore`：以 JSONL 追加 `AgentMessage`，支持异步 `append` 和 `load`。它是 transcript 存储，不自动改变 Loop；应用层可在 `MessageEnd` 或 `AgentEnd` 时写入。
 - `MessageQueue`：区分 `User`、`Steering`、`FollowUp` 和 `Stop` 输入，为外层 session runner 提供有界异步队列。
 - `CompactionPlugin`：保留为显式 legacy 路径，按消息数截取旧文本；协调模式禁止与它混用。应用现使用 `ContextWindowPlugin` 的预算、模型摘要和可恢复检查点。

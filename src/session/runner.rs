@@ -18,6 +18,12 @@ pub struct SessionRunResult {
     pub run_id: String,
 }
 pub struct SessionRunner;
+pub struct SessionExecutionPlan {
+    pub metadata_revision: String,
+    pub selection: crate::provider::ModelSelection,
+    pub resolved: crate::provider::ResolvedModel,
+    pub context: SessionContext,
+}
 struct RunGuard {
     handle: Arc<SessionHandle>,
     finished: bool,
@@ -40,8 +46,57 @@ impl SessionRunner {
         events: mpsc::UnboundedSender<AgentEvent>,
         activation: u64,
     ) -> R<SessionRunResult> {
+        Self::run_inner(handle, agent, input, core, cancel, events, activation, None).await
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_with_plan(
+        handle: Arc<SessionHandle>,
+        agent: AgentLoop,
+        input: Vec<ContentPart>,
+        core: &str,
+        cancel: CancellationToken,
+        events: mpsc::UnboundedSender<AgentEvent>,
+        activation: u64,
+        plan: SessionExecutionPlan,
+    ) -> R<SessionRunResult> {
+        let (metadata, revision) = handle.metadata();
+        if revision != plan.metadata_revision
+            || metadata
+                .model
+                .selection()
+                .map_err(|e| E::Configuration(e.to_string()))?
+                != plan.selection
+            || !Arc::ptr_eq(agent.provider(), &plan.resolved.provider)
+        {
+            return Err(E::Configuration(
+                "session execution plan no longer matches model selection".into(),
+            ));
+        }
+        Self::run_inner(
+            handle,
+            agent,
+            input,
+            core,
+            cancel,
+            events,
+            activation,
+            Some(plan),
+        )
+        .await
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn run_inner(
+        handle: Arc<SessionHandle>,
+        agent: AgentLoop,
+        input: Vec<ContentPart>,
+        core: &str,
+        cancel: CancellationToken,
+        events: mpsc::UnboundedSender<AgentEvent>,
+        activation: u64,
+        plan: Option<SessionExecutionPlan>,
+    ) -> R<SessionRunResult> {
         let runtime = handle.runtime()?;
-        let (metadata, _) = handle.metadata();
+        let (mut metadata, _) = handle.metadata();
         if metadata.archived {
             return Err(E::SessionArchived(metadata.id));
         }
@@ -82,6 +137,19 @@ impl SessionRunner {
                 "durable history changed; reopen session before sending".into(),
             ));
         }
+        if metadata.schema_version == 1 {
+            metadata.schema_version = 2;
+            let revision = handle
+                .repo
+                .save_metadata(&metadata, Some(&loaded.revision))
+                .await?;
+            *handle.metadata.lock().unwrap() = (metadata.clone(), revision);
+        }
+        let resolved_model = plan.as_ref().map(|p| p.resolved.descriptor.clone());
+        let effective_context = plan
+            .as_ref()
+            .map(|p| p.context.clone())
+            .unwrap_or_else(|| metadata.context.clone());
         let segment = handle.repo.begin(&metadata.id).await?;
         let writer = Arc::new(ManagedWriter {
             repo: handle.repo.clone(),
@@ -91,8 +159,9 @@ impl SessionRunner {
         });
         let header = SegmentOpen {
             model: Some(metadata.model.clone()),
-            context: Some(metadata.context.clone()),
-            schema_version: 1,
+            context: Some(effective_context.clone()),
+            resolved_model: resolved_model.clone(),
+            schema_version: 2,
             session_id: metadata.id.clone(),
             run_id: run_id.clone(),
             segment_id: segment.clone(),
@@ -107,7 +176,11 @@ impl SessionRunner {
                 report.head
             },
             legacy_prefix: report.legacy_prefix,
-            config_hash: content_hash(&serde_json::to_vec(&(&metadata.model, &metadata.context))?),
+            config_hash: content_hash(&serde_json::to_vec(&(
+                &metadata.model,
+                &effective_context,
+                &resolved_model,
+            ))?),
             started_at: now(),
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -197,6 +270,26 @@ impl SessionRunner {
             })
             .unwrap_or_default();
         let end = RunEnd {
+            requests: outcome
+                .as_ref()
+                .map(|r| {
+                    r.events
+                        .iter()
+                        .filter_map(|e| {
+                            if let AgentEvent::ModelRequestFinished { report, .. } = e {
+                                Some(report.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            provider_error: outcome
+                .as_ref()
+                .ok()
+                .and_then(|r| r.error.as_ref())
+                .and_then(|e| e.provider_error().cloned()),
             message_range: Some([messages_before, runtime.snapshot().await.messages.len()]),
             error_kind: outcome
                 .as_ref()
@@ -208,12 +301,13 @@ impl SessionRunner {
                         AgentError::Session(_) => "session",
                         AgentError::Context(_) => "context",
                         AgentError::Model(_) => "model",
+                        AgentError::Provider(_) => "provider",
                         AgentError::Tool(_) => "tool",
                         _ => "agent",
                     }
                     .to_string()
                 }),
-            schema_version: 1,
+            schema_version: 2,
             run_id: run_id.clone(),
             reason,
             error: primary.clone(),

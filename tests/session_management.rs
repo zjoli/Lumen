@@ -30,6 +30,7 @@ async fn run(manager: &SessionManager, input: &str) -> SessionRunResult {
     let provider = Arc::new(MockProvider::new(vec![AssistantMessage {
         content: text("回答"),
         tool_calls: vec![],
+        ..Default::default()
     }]));
     let mut agent = AgentLoop::new(provider.clone());
     agent.register_plugin(Arc::new(ContextWindowPlugin::new(
@@ -372,6 +373,7 @@ async fn interrupted_open_segment_recovers_partial_tail_and_never_replays_tools(
     let header = SegmentOpen {
         model: None,
         context: None,
+        resolved_model: None,
         schema_version: 1,
         session_id: id.clone(),
         run_id: "interrupted".into(),
@@ -421,7 +423,7 @@ impl ModelProvider for Hanging {
         &self,
         _: ModelRequest,
         _: CancellationToken,
-    ) -> Result<ModelEventStream, AgentError> {
+    ) -> Result<ModelEventStream, ProviderError> {
         std::future::pending().await
     }
 }
@@ -543,7 +545,7 @@ impl ModelProvider for CleanupFailure {
         &self,
         _: ModelRequest,
         _: CancellationToken,
-    ) -> Result<ModelEventStream, AgentError> {
+    ) -> Result<ModelEventStream, ProviderError> {
         let directory = self.root.join("sessions").join(&self.id);
         for entry in std::fs::read_dir(directory).unwrap() {
             let path = entry.unwrap().path();
@@ -551,7 +553,10 @@ impl ModelProvider for CleanupFailure {
                 std::fs::create_dir(path.with_extension("")).unwrap();
             }
         }
-        Err(AgentError::Model("primary model failure".into()))
+        Err(ProviderError::new(
+            lumen::provider::ProviderErrorKind::Upstream,
+            "primary model failure",
+        ))
     }
 }
 #[tokio::test]
@@ -678,6 +683,7 @@ async fn legacy_working_segments_continue_without_rewriting_context_coverage() {
     let provider = Arc::new(MockProvider::new(vec![AssistantMessage {
         content: text("old answer"),
         tool_calls: vec![],
+        ..Default::default()
     }]));
     {
         let runtime = SessionRuntime::open_file(&path).unwrap();
