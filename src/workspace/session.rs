@@ -69,9 +69,7 @@ fn parse(bytes: &[u8]) -> WorkspaceResult<Vec<AgentMessage>> {
         .collect()
 }
 pub(crate) fn validate_segment(path: &str, bytes: &[u8]) -> WorkspaceResult<()> {
-    segment_info(path)?;
-    parse(bytes)?;
-    Ok(())
+    crate::session::validate_session_file(path, bytes)
 }
 fn find_segment(root: &Path, id: &str, open: bool) -> WorkspaceResult<SegmentInfo> {
     validate_typed_id(id, "segment")?;
@@ -180,7 +178,13 @@ impl SessionArchive {
                 let open = files::safe_path(&s.root, &format!("{}.open", info.path))?;
                 let bytes = fs::read(&open)?;
                 validate_segment(&info.path, &bytes)?;
+                if files::safe_path(&s.root, &info.path)?.exists() {
+                    return Err(WorkspaceError::RevisionConflict(info.path.clone()));
+                }
                 fs::rename(open, files::safe_path(&s.root, &info.path)?)?;
+                #[cfg(unix)]
+                fs::File::open(files::safe_path(&s.root, &info.path)?.parent().unwrap())?
+                    .sync_all()?;
                 s.segment_locks.remove(&segment_id);
                 Ok(info)
             })
@@ -199,6 +203,17 @@ impl SessionArchive {
                 for (path, bytes) in &tree {
                     if path.starts_with("sessions/") {
                         validate_segment(path, bytes)?;
+                        if path.ends_with("/session.yaml") {
+                            let id = path.split('/').nth(1).unwrap().to_string();
+                            if filter
+                                .session_id
+                                .as_ref()
+                                .is_none_or(|expected| expected == &id)
+                            {
+                                groups.entry(id).or_default();
+                            }
+                            continue;
+                        }
                         let info = segment_info(path)?;
                         if filter
                             .session_id
@@ -235,12 +250,22 @@ impl SessionArchive {
                 let mut segments = vec![];
                 for (path, bytes) in files::scan(&s.root)? {
                     if path.starts_with(&format!("sessions/{session_id}/")) {
+                        if path.ends_with("/session.yaml") {
+                            validate_segment(&path, &bytes)?;
+                            continue;
+                        }
                         let info = segment_info(&path)?;
                         segments.push(TranscriptSegment {
                             info,
                             messages: parse(&bytes)?,
                         })
                     }
+                }
+                if segments.is_empty()
+                    && !files::safe_path(&s.root, &format!("sessions/{session_id}/session.yaml"))?
+                        .exists()
+                {
+                    return Err(WorkspaceError::NotFound(session_id));
                 }
                 Ok(SessionTranscript {
                     session_id,
@@ -251,8 +276,18 @@ impl SessionArchive {
     }
 }
 pub(crate) fn recover_segments(root: &Path) -> WorkspaceResult<usize> {
+    recover_filtered(root, None)
+}
+pub(crate) fn recover_session_segments(root: &Path, id: &str) -> WorkspaceResult<usize> {
+    validate_typed_id(id, "session")?;
+    recover_filtered(root, Some(id))
+}
+fn recover_filtered(root: &Path, session: Option<&str>) -> WorkspaceResult<usize> {
     let mut count = 0;
     for path in segment_paths(root)? {
+        if session.is_some_and(|id| !path.starts_with(&format!("sessions/{id}/"))) {
+            continue;
+        }
         if !path.ends_with(".jsonl.open") {
             continue;
         }

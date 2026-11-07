@@ -4,6 +4,10 @@ pub enum Command {
     Help,
     Quit,
     New,
+    NewTitled(String),
+    Sessions(String),
+    SessionsNext { query: String, cursor: String },
+    Session(SessionCommand),
     Clear,
     Model(Option<String>),
     Status,
@@ -27,6 +31,18 @@ pub enum Command {
     Index(IndexCommand),
     Validate,
     Invalid(String),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionCommand {
+    Info,
+    Rename(String),
+    Archive(Option<String>),
+    Unarchive(String),
+    Close,
+    History(Option<String>),
+    Import(PathBuf),
+    Preview(PathBuf),
+    Inspect(String),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceCommand {
@@ -108,7 +124,26 @@ pub fn parse(input: &str) -> Option<Command> {
     Some(match name.as_str() {
         "/help" => Command::Help,
         "/quit" | "/exit" => Command::Quit,
-        "/new" => Command::New,
+        "/new" => rest().map(Command::NewTitled).unwrap_or(Command::New),
+        "/sessions" if args.first().is_some_and(|arg| arg == "--cursor") && args.len() >= 2 => {
+            Command::SessionsNext {
+                cursor: args[1].clone(),
+                query: args[2..].join(" "),
+            }
+        }
+        "/sessions" => Command::Sessions(rest().unwrap_or_default()),
+        "/session" => Command::Session(match args.first().map(String::as_str) {
+            None => SessionCommand::Info,
+            Some("rename") if args.len() > 1 => SessionCommand::Rename(args[1..].join(" ")),
+            Some("archive") if args.len() <= 2 => SessionCommand::Archive(args.get(1).cloned()),
+            Some("unarchive") if args.len() == 2 => SessionCommand::Unarchive(args[1].clone()),
+            Some("close") if args.len() == 1 => SessionCommand::Close,
+            Some("history") if args.len() <= 2 => SessionCommand::History(args.get(1).cloned()),
+            Some("import") if args.len() == 2 => SessionCommand::Import(args[1].clone().into()),
+            Some("preview") if args.len() == 2 => SessionCommand::Preview(args[1].clone().into()),
+            Some("inspect") if args.len() == 2 => SessionCommand::Inspect(args[1].clone()),
+            _ => return Some(invalid()),
+        }),
         "/clear" => Command::Clear,
         "/model" => Command::Model(rest()),
         "/status" => Command::Status,
@@ -189,7 +224,7 @@ pub fn parse(input: &str) -> Option<Command> {
     })
 }
 pub fn help() -> &'static str {
-    "/help | /quit | /new | /clear | /model [id] | /status | /stop\n/context | /compact | /skills | /resume <session-id>\n/chat | /read [title|id] | /open <title|id> | /knowledge | /theme [auto|light|dark]\n/workspace init <path> | open <path> | clone <url> <path> | config [key value]\n/search <query> | /commit <message> | /sync [message]\n/sync pull | push | fetch | remote [url|none] | conflicts | resolve <path> <file|delete> | continue | abort\n/history [id] | /diff [id] | /restore <id> <commit>\n/index status | refresh | rebuild <all|lexical|relations|learning_state|vectors|summaries>\n/validate\nTUI: F6 切换区域 · F1 目录 · F2 阅读 · F3 对话 · i 输入 · Esc 浏览\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 停止 · Ctrl+Q 退出 · Ctrl+B 目录开关\n阅读: / 查找 · a 引用章节 · v 选区/↑↓ 扩展/a 引用 · Tab 选择链接/Enter 打开\n输入: / 命令 · @ 引用 · ↑↓ 选择/Tab 补全 · Ctrl+R 移除引用"
+    "/help | /quit | /new | /clear | /model [id] | /status | /stop\n/context | /compact | /skills | /resume <session-id>\n/sessions [query] | /sessions --cursor <cursor> [query] | /session\n/session rename <title> | archive [id] | unarchive <id> | close | history [before]\n/session inspect <id> | preview <legacy.jsonl> | import <legacy.jsonl>\n/chat | /read [title|id] | /open <title|id> | /knowledge | /theme [auto|light|dark]\n/workspace init <path> | open <path> | clone <url> <path> | config [key value]\n/search <query> | /commit <message> | /sync [message]\n/sync pull | push | fetch | remote [url|none] | conflicts | resolve <path> <file|delete> | continue | abort\n/history [id] | /diff [id] | /restore <id> <commit>\n/index status | refresh | rebuild <all|lexical|relations|learning_state|vectors|summaries>\n/validate\nTUI: F6 切换区域 · F1 目录 · F2 阅读 · F3 对话 · i 输入 · Esc 浏览\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 停止 · Ctrl+Q 退出 · Ctrl+B 目录开关\n阅读: / 查找 · a 引用章节 · v 选区/↑↓ 扩展/a 引用 · Tab 选择链接/Enter 打开\n输入: / 命令 · @ 引用 · ↑↓ 选择/Tab 补全 · Ctrl+R 移除引用"
 }
 #[cfg(test)]
 mod tests {

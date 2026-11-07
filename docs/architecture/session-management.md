@@ -1,8 +1,8 @@
 # Lumen Session 管理设计
 
-状态：设计提案，尚未实现。日期：2026-11-07。
+状态：首版已实现。日期：2026-11-07。第 1–12 节保留设计目标，第 13 节说明落地接口与边界。
 
-本方案在现有会话归档和上下文运行时之上补齐会话管理。配套设计：[Agent Loop](agent-loop.md)、[上下文窗口](context-window.md)、[上下文实现](context-management-implementation.md)、[知识存储](knowledge-storage.md)。本次只定义方案，不改变已落地代码的行为。
+本方案在现有会话归档和上下文运行时之上补齐会话管理。配套设计：[Agent Loop](agent-loop.md)、[上下文窗口](context-window.md)、[上下文实现](context-management-implementation.md)、[知识存储](knowledge-storage.md)。对应实现位于 [session 模块](../../src/session/mod.rs)。
 
 ## 1. 目标与首版范围
 
@@ -360,3 +360,29 @@ src/tui/                  会话选择、类型化激活事件与状态恢复
 8. 元数据更新与归档不修改已提交片段；学习事件的 session_id 关联保持有效。
 9. standalone 重启保持相同身份，`/new` 与旧组选择/导入不混淆；重复导入不产生重复会话。
 10. 旧/new JSONL、metadata、git 校验和同步兼容，原有连续压缩与缓存前缀测试继续通过。
+
+## 13. 首版实现说明（2026-11-07）
+
+实现位于 [manager](../../src/session/manager.rs)、[runner](../../src/session/runner.rs)、[repository](../../src/session/repository.rs)、[replay](../../src/session/replay.rs)、[runtime](../../src/session/runtime.rs) 和 [应用入口](../../src/tui/service.rs)。
+
+| 设计阶段 | 实现状态 |
+| --- | --- |
+| P0 身份与执行边界 | SessionIdentity/Handle/Manager/Runner；关闭失效旧 handle，运行中拒绝变更，session 级 OS 租约，writer 绑定检查 |
+| P1 存储与恢复 | session.yaml CAS、新 segment header/run_end、父链/hash 校验、结构化 ReplayReport、只读诊断、孤立 .open 恢复 |
+| P2 管理操作 | 新建、列表、标题/正文搜索、切换、重命名、可逆归档、关闭；cursor 校验 generation 和查询条件 |
+| P3 TUI | 类型化 CommandOutcome、可过滤/分页的会话浮层、分页历史去重、草稿与阅读/引用恢复、运行中只读列表/详情 |
+| P4 独立模式与迁移 | 统一目录 backend、平台默认路径、最近会话恢复、旧文件显式预览与幂等导入，旧 checkpoint 不重编号 |
+
+与示意结构的具体对应：
+
+- SessionCatalog 合并在 Manager 与本地 SQLite cache 中；数据库为 `.lumen/session-index.sqlite`，按会话内容指纹缓存摘要和可见正文。索引可删除重建；首版扫描文件计算指纹，尚未使用文件监听减少扫描。
+- 核心服务公开 `create/switch/inspect/list/update/rename/archive/close/history`。create 创建并选择新会话，switch 的 readonly 参数控制只读查看；归档恢复通过 archive 的布尔参数执行。
+- SessionRuntime 迁入 session，WindowState 暂随 runtime 保留；`context::store` 兼容导出旧接口。受管 runtime 无 run writer 时拒绝追加，外部不能调用 set_writer 接管它。
+- 片段管理记录保存具体模型/窗口配置及其 hash；run_end 保存消息范围、停止原因、错误分类和两类 usage。它们只由统一 replay 解码，不进入 runtime 的 raw_hash/through 计数或模型上下文。
+- TUI 草稿和阅读位置在切换、关闭、正常退出时保存；不承诺每个按键都耐久落盘。引用 revision 改变时清除旧选区。历史默认每页 50 条，API 上限 200 条；会话列表默认每页 20 项。
+- 新目录模式中，默认 profile 使用 `LUMEN_MODEL_ENDPOINT/KEY`。本机 `.lumen/model-profiles.yaml` 支持命名连接配置，密钥通过 api_key_env 在发送时读取，不写元数据。profile 不可用时可读历史，发送返回明确配置错误。
+- 存在 `LUMEN_SESSION` 旧文件时不自动导入或改写；使用同路径 `.sessions` 作为新目录，显式 `/session preview` 或 `/session import`，导入返回可 `/resume` 的稳定 ID。后续追加不影响重复导入的幂等判断。
+- 恢复采取保守策略：context 控制记录不兼容时只读，避免默默丢失活跃 Skill/约束；尚未自动挑选旧 checkpoint 绕过不可解释的控制记录。完整行损坏只展示已知有效前缀，不跳过损坏行继续推理。
+- 单会话单写入者、跨设备父链分叉只读诊断已实现；分支选择与合并、物理删除、后台多会话执行继续保持首版排除范围。
+
+验证见 [Session 集成测试](../../tests/session_management.rs) 与 [TUI 测试](../../src/tui/tests.rs)，包括跨进程租约子测试、目录重建、旧 checkpoint 导入、关闭旧句柄、故障收尾、分叉和损坏诊断，以及阅读/草稿隔离与分页历史。原上下文、Loop、存储与同步测试继续保留。

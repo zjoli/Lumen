@@ -114,7 +114,13 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 模型对话使用 `LUMEN_MODEL_ENDPOINT`、`LUMEN_MODEL_KEY`、`LUMEN_MODEL`；未配置时保留本地命令与示例响应。向量、重排、摘要通过 Rust provider trait 注入；无 provider 时检索降级为全文，概览使用确定性导航。后台索引任务随工作区关闭而取消并等待退出。
 
-上下文由统一插件管理，检索与 Skill 按需追加，达到水位时生成结构化摘要并提交可恢复检查点。`/context` 查看窗口分区与预留，`/compact` 安排下一请求前压缩，`/skills` 查看本地 Skill，`/resume <session-id>` 恢复工作区会话。独立文件模式自动恢复 `LUMEN_SESSION` 指向的文件，`/new` 保留旧归档并开始新会话。
+上下文由统一插件管理，检索与 Skill 按需追加，达到水位时生成结构化摘要并提交可恢复检查点。`/context` 查看窗口分区与预留，`/compact` 安排下一请求前压缩，`/skills` 查看本地 Skill。
+
+会话管理支持 `/sessions [query]` 列表与搜索、`/new [title]` 新建、`/resume <session-id>` 切换与恢复、`/session rename <title>` 重命名、`/session archive [id]` 归档、`/session unarchive <id>` 取消归档及 `/session close` 关闭。TUI 列表支持输入过滤、↑↓ 选择、Enter 打开、PgDn 下一页；聊天顶部 PgUp 加载更早历史。切换会恢复聊天、草稿和阅读位置，运行中需要先 `/stop` 并等待收尾；列表和详情仍可查看。
+
+工作区会话保存于 `sessions/<id>/session.yaml` 和不可变 JSONL 片段。无工作区时使用 `LUMEN_SESSION_DIR` 指定的目录，默认位于平台应用数据目录下的 `lumen/`；启动恢复最近会话。旧 `LUMEN_SESSION` 文件保留原样，目标目录默认为同路径的 `.sessions` 目录；用 `/session preview <file>` 只读浏览、`/session import <file>` 幂等导入，再 `/resume <id>` 继续。
+
+会话元数据保存模型名称、协议和窗口设置，凭据只在发送时解析。默认 profile 使用上述环境变量；额外 profile 可在设备本地 `.lumen/model-profiles.yaml` 配置，例如 `tutor: { endpoint: "https://example.com/v1/chat/completions", api_key_env: "LUMEN_TUTOR_KEY" }`，通过 SessionMetadata 的 `model.profile_ref` 选择。该文件不进入 Git，也不保存密钥。缺失 profile 或凭据时历史仍可阅读，真实模型会话不会自动降级成另一个模型。
 
 `LUMEN_CONTEXT_TOKENS` 配置模型实际窗口容量（默认 128000），`LUMEN_OUTPUT_TOKENS` 配置最大输出（默认不超过 4096 和窗口的 1/8）；小窗口会同步缩小工具与安全预留。首版按 UTF-8 字节和协议开销保守估算 token，需按所用模型配置容量；API usage 单独报告实际用量。`LUMEN_MODEL_FORMAT=anthropic` 可选 Anthropic Messages，默认使用 OpenAI 兼容 Chat Completions；`LUMEN_PROMPT_CACHE=false` 关闭显式缓存标记。当前 HTTP adapter 保留完整响应模式，尚未接入 SSE。
 

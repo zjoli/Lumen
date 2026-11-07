@@ -224,6 +224,9 @@ pub fn draw(frame: &mut Frame, ui: &mut Ui) {
     composer(frame, ui, g.input);
     dividers(frame, g, theme);
     completions(frame, ui, g.content);
+    if ui.session_panel {
+        session_panel(frame, ui, area);
+    }
     let focus = match ui.focus {
         Focus::Tree => "目录",
         Focus::Content => "内容",
@@ -259,6 +262,80 @@ pub fn draw(frame: &mut Frame, ui: &mut Ui) {
             1,
         ),
     );
+}
+fn session_panel(frame: &mut Frame, ui: &Ui, area: Rect) {
+    let width = area.width.saturating_sub(4).min(100);
+    let height = area.height.saturating_sub(4).min(20);
+    if width < 10 || height < 4 {
+        return;
+    }
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = panel(
+        ui.theme,
+        "会话 · 输入过滤 · Enter 打开 · PgDn 下一页 · Esc 返回".into(),
+        true,
+    );
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+    let filtered: Vec<_> = ui
+        .session_choices
+        .iter()
+        .filter(|info| {
+            info.metadata
+                .title
+                .to_lowercase()
+                .contains(&ui.session_filter.to_lowercase())
+                || info.identity.session_id.contains(&ui.session_filter)
+        })
+        .collect();
+    let visible = inner.height.saturating_sub(1) as usize;
+    let start = ui.session_choice.saturating_sub(visible.saturating_sub(1));
+    let mut lines = vec![Line::from(span(
+        format!("过滤: {}", ui.session_filter),
+        ui.theme.accent(),
+    ))];
+    for (index, info) in filtered.iter().enumerate().skip(start).take(visible) {
+        lines.push(Line::from(span(
+            format!(
+                "{} {}{} · {} · {:?} · {} · {}",
+                if index == ui.session_choice {
+                    "›"
+                } else {
+                    " "
+                },
+                info.metadata.title,
+                if info.metadata.archived {
+                    " [已归档]"
+                } else {
+                    ""
+                },
+                info.metadata.model.model,
+                info.health,
+                info.updated_at,
+                info.identity
+                    .session_id
+                    .chars()
+                    .rev()
+                    .take(8)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>()
+            ),
+            if index == ui.session_choice {
+                ui.theme.accent()
+            } else {
+                ui.theme.base()
+            },
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 fn dividers(frame: &mut Frame, g: Geometry, theme: Theme) {
     // Restore junctions after the overlapping panel borders have been drawn.

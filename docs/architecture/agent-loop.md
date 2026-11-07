@@ -6,6 +6,8 @@
 
 **实现更新（2026-11-05）：** 已接入分阶段上下文插件、SessionRuntime、请求封存和结构化压缩。本文保留早期接口示意；当前接口以 `src/agent/` 和 [插件集成方案第 14 节](context-management-implementation.md#14-首版实现说明2026-11-05) 为准。
 
+**会话管理更新（2026-11-07）：** 应用通过 SessionManager/SessionRunner 管理身份、片段与运行状态；Loop 仍只提交消息和执行模型/工具。事件由 Runner 附加会话、run 和激活标识，恢复时集中剥离管理记录，不改变上下文检查点的编号。详见 [Session 管理](session-management.md)。
+
 本文是 Agent Loop 的架构事实依据。它记录 Lumen 当前采用的边界和行为约定；实现可以逐步落地，但不应在没有更新本文的情况下改变核心语义。
 
 ## 背景

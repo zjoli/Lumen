@@ -39,6 +39,7 @@ pub struct Message {
     pub body: String,
 }
 pub enum Action {
+    Command(crate::commands::Command),
     Submit(String),
     Open(ObjectId, Vec<ObjectId>),
     Attach(ObjectId),
@@ -68,6 +69,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/theme dark", "深色主题"),
     ("/search", "检索知识"),
     ("/new", "新建会话"),
+    ("/sessions", "查找并选择历史会话"),
+    ("/session", "当前会话详情"),
+    ("/session rename", "重命名当前会话"),
+    ("/session archive", "归档会话"),
+    ("/session unarchive", "取消归档"),
+    ("/session close", "关闭当前会话"),
+    ("/session import", "导入旧 JSONL 文件"),
+    ("/session preview", "只读浏览旧 JSONL"),
     ("/clear", "清空对话显示"),
     ("/model", "查看或切换模型"),
     ("/status", "查看工作区状态"),
@@ -88,6 +97,17 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/quit", "退出"),
 ];
 pub struct Ui {
+    pub session_identity: Option<crate::session::SessionIdentity>,
+    pub session_activation: u64,
+    pub session_title: String,
+    pub history_before: Option<String>,
+    pub history_keys: std::collections::BTreeSet<String>,
+    pub session_choices: Vec<crate::session::ManagedSessionInfo>,
+    pub session_choice: usize,
+    pub session_filter: String,
+    pub session_panel: bool,
+    pub session_next: Option<String>,
+    pub session_query: String,
     pub theme: Theme,
     pub focus: Focus,
     pub view: View,
@@ -125,8 +145,120 @@ pub struct Ui {
     pub input_width: usize,
 }
 impl Ui {
+    pub fn session_ui(&self) -> crate::session::SessionUiState {
+        crate::session::SessionUiState {
+            draft: self.editor.text.clone(),
+            chat_scroll: self.chat_scroll,
+            reading: self
+                .document
+                .as_ref()
+                .map(|document| crate::session::ReadingPosition {
+                    id: document.object.metadata.id.clone(),
+                    revision: document.object.revision.0.clone(),
+                    scroll: document.scroll,
+                    heading: None,
+                }),
+            reference: self
+                .reference
+                .as_ref()
+                .map(|reference| crate::session::ReferenceState {
+                    id: reference.id.clone(),
+                    title: reference.title.clone(),
+                    heading: reference.heading.clone(),
+                    selection: reference
+                        .selection
+                        .as_ref()
+                        .map(|(revision, text)| (revision.0.clone(), text.clone())),
+                }),
+        }
+    }
+    pub fn close_session(&mut self) {
+        self.session_identity = None;
+        self.session_activation += 1;
+        self.session_title.clear();
+        self.history_before = None;
+        self.history_keys.clear();
+        self.messages.clear();
+        self.streaming = None;
+        self.reference = None;
+        self.document = None;
+        self.editor.set(String::new());
+        self.chat_links.clear();
+        self.chat_link = None;
+        self.chat_scroll = 0;
+    }
+    pub fn activate_session(&mut self, view: &crate::session::SessionView) {
+        self.close_session();
+        self.session_identity = Some(view.info.identity.clone());
+        self.session_activation = view.activation;
+        self.session_title = view.info.metadata.title.clone();
+        self.model = view.info.metadata.model.model.clone();
+        self.history_before = view.history.before.clone();
+        for message in &view.history.messages {
+            self.history_keys
+                .insert(crate::session::history_key(&message.record_ref));
+            self.message(
+                if message.role == "user" {
+                    "你"
+                } else {
+                    "Lumen"
+                },
+                &message.text,
+            );
+        }
+        self.editor.set(view.ui.draft.clone());
+        self.chat_scroll = view.ui.chat_scroll;
+        self.follow = self.chat_scroll == 0;
+        self.unread = 0;
+        self.reference = view.ui.reference.as_ref().map(|reference| Reference {
+            id: reference.id.clone(),
+            title: reference.title.clone(),
+            heading: reference.heading.clone(),
+            selection: reference
+                .selection
+                .as_ref()
+                .map(|(revision, text)| (Revision(revision.clone()), text.clone())),
+        });
+        self.view = View::Chat;
+        if !view.info.diagnostics.is_empty() {
+            self.notify(view.info.diagnostics.join("; "), !view.writable);
+        }
+    }
+    pub fn prepend_history(&mut self, page: crate::session::HistoryPage) {
+        let mut messages = vec![];
+        for message in page.messages {
+            if self
+                .history_keys
+                .insert(crate::session::history_key(&message.record_ref))
+            {
+                messages.push(Message {
+                    role: if message.role == "user" {
+                        "你"
+                    } else {
+                        "Lumen"
+                    },
+                    body: text::clean(&message.text),
+                });
+            }
+        }
+        messages.append(&mut self.messages);
+        self.messages = messages;
+        self.history_before = page.before;
+        self.follow = false;
+    }
     pub fn new(model: String, theme: Theme) -> Self {
         Self {
+            session_identity: None,
+            session_activation: 0,
+            session_title: String::new(),
+            history_before: None,
+            history_keys: Default::default(),
+            session_choices: vec![],
+            session_choice: 0,
+            session_filter: String::new(),
+            session_panel: false,
+            session_next: None,
+            session_query: String::new(),
             theme,
             focus: Focus::Input,
             view: View::Chat,
@@ -246,6 +378,41 @@ impl Ui {
     }
     pub fn agent(&mut self, event: AgentEvent) {
         match event {
+            AgentEvent::SessionActivated(view) => {
+                if let Some(identity) = &self.session_identity {
+                    if view.info.identity.store_id != identity.store_id
+                        || view.activation < self.session_activation
+                    {
+                        return;
+                    }
+                }
+                // Empty implicit sessions must not clear the just-submitted question or reader.
+                if self.session_identity.is_none() && view.history.messages.is_empty() {
+                    self.session_identity = Some(view.info.identity.clone());
+                    self.session_activation = view.activation;
+                    self.session_title = view.info.metadata.title.clone();
+                } else if self.session_identity.as_ref() != Some(&view.info.identity)
+                    || self.session_activation != view.activation
+                {
+                    let current = self.busy.then(|| self.last_submission.clone()).flatten();
+                    self.activate_session(&view);
+                    if let Some(input) = current {
+                        self.message("你", input);
+                    }
+                }
+            }
+            AgentEvent::SessionEvent {
+                identity,
+                activation,
+                event,
+                ..
+            } => {
+                if self.session_identity.as_ref() == Some(&identity)
+                    && self.session_activation == activation
+                {
+                    self.agent(*event);
+                }
+            }
             AgentEvent::MessageStart(AgentMessage::Assistant(_)) => self.streaming = None,
             AgentEvent::MessageDelta { delta } => {
                 let i = if let Some(i) = self.streaming {
@@ -405,6 +572,62 @@ impl Ui {
         }
     }
     pub fn key(&mut self, key: KeyEvent) -> Option<Action> {
+        if self.session_panel {
+            let filtered: Vec<_> = self
+                .session_choices
+                .iter()
+                .filter(|info| {
+                    info.metadata
+                        .title
+                        .to_lowercase()
+                        .contains(&self.session_filter.to_lowercase())
+                        || info.identity.session_id.contains(&self.session_filter)
+                })
+                .collect();
+            match key.code {
+                KeyCode::PageDown => {
+                    if let Some(cursor) = &self.session_next {
+                        return Some(Action::Command(crate::commands::Command::SessionsNext {
+                            query: self.session_query.clone(),
+                            cursor: cursor.clone(),
+                        }));
+                    }
+                }
+                KeyCode::Esc => self.session_panel = false,
+                KeyCode::Up => self.session_choice = self.session_choice.saturating_sub(1),
+                KeyCode::Down => {
+                    self.session_choice =
+                        (self.session_choice + 1).min(filtered.len().saturating_sub(1))
+                }
+                KeyCode::Backspace => {
+                    self.session_filter.pop();
+                    self.session_choice = 0;
+                }
+                KeyCode::Char(ch) => {
+                    self.session_filter.push(ch);
+                    self.session_choice = 0;
+                }
+                KeyCode::Enter => {
+                    if let Some(info) = filtered.get(self.session_choice) {
+                        let command = if info.metadata.archived
+                            || !matches!(
+                                info.health,
+                                crate::session::SessionHealth::Complete
+                                    | crate::session::SessionHealth::Interrupted
+                            ) {
+                            "/session inspect"
+                        } else {
+                            "/resume"
+                        };
+                        let input = format!("{command} {}", info.identity.session_id);
+                        self.session_panel = false;
+                        return Some(Action::Submit(input));
+                    }
+                }
+                _ => (),
+            }
+            return None;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl {
             match key.code {
@@ -469,6 +692,13 @@ impl Ui {
                 return None;
             }
             KeyCode::PageUp => {
+                if self.view == View::Chat && self.chat_scroll == 0 && !self.busy {
+                    if let Some(cursor) = &self.history_before {
+                        return Some(Action::Command(crate::commands::Command::Session(
+                            crate::commands::SessionCommand::History(Some(cursor.clone())),
+                        )));
+                    }
+                }
                 self.scroll(-(self.viewport_height as isize));
                 return None;
             }

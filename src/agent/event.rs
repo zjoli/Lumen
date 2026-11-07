@@ -2,6 +2,13 @@ use super::{AgentMessage, AssistantMessage, ToolCall, ToolResultMessage};
 
 #[derive(Clone, Debug)]
 pub enum AgentEvent {
+    SessionActivated(Box<crate::session::SessionView>),
+    SessionEvent {
+        identity: crate::session::SessionIdentity,
+        run_id: String,
+        activation: u64,
+        event: Box<AgentEvent>,
+    },
     MessageCommitted(AgentMessage),
     ContextCompactionStart,
     ContextDegraded {

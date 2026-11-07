@@ -194,7 +194,9 @@ pub(crate) fn refresh(
         insert_chunk(&tx, id, 2, 0, "", &e.body, 1, rev, id, &[])?;
     }
     for (path, bytes) in tree {
-        if path.starts_with("sessions/") && crate::workspace::validate_segment(path, bytes).is_ok()
+        if path.starts_with("sessions/")
+            && path.ends_with(".jsonl")
+            && crate::workspace::validate_segment(path, bytes).is_ok()
         {
             let rev = format::revision(bytes);
             let id = path
@@ -202,12 +204,23 @@ pub(crate) fn refresh(
                 .rsplit('/')
                 .next()
                 .unwrap_or(path);
-            let text = std::str::from_utf8(bytes).unwrap_or("");
+            let text = crate::session::decode_records(bytes)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|message| match message {
+                    crate::agent::AgentMessage::User(parts) => Some(parts),
+                    crate::agent::AgentMessage::Assistant(a) => Some(a.content),
+                    _ => None,
+                })
+                .flatten()
+                .map(|crate::agent::ContentPart::Text(text)| text)
+                .collect::<Vec<_>>()
+                .join("\n");
             tx.execute(
                 "INSERT INTO documents VALUES(?1,?2,'session',?1,'{}',?3)",
                 params![id, path, rev.0],
             )?;
-            for (i, chunk) in chunks(text, 1).into_iter().enumerate() {
+            for (i, chunk) in chunks(&text, 1).into_iter().enumerate() {
                 insert_chunk(&tx, id, 2, i, &chunk.0, &chunk.1, chunk.2, &rev, id, &[])?;
             }
         }

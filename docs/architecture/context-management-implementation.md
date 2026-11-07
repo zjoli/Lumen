@@ -438,4 +438,4 @@ src/tui/service.rs       持有 runtime，移除 run 末重复持久化
 
 配置见 [README](../../README.md)。验证包含原 Agent Loop/知识存储/TUI 测试，以及 [上下文集成测试](../../tests/context_management.rs)：连续压缩、前缀稳定、Skill 步骤、检查点取消边界、故障恢复、工具归档、分块摘要和会话重新打开。服务端真实缓存命中和模型摘要质量需要用配置好的实际服务继续评测，离线测试不作此保证。
 
-后续会话身份、生命周期、历史展示与运行归档的管理方案见 [Session 管理设计](session-management.md)。该方案尚未实现，不改变本节现状。
+会话身份、生命周期、历史展示与运行归档管理已在 2026-11-07 落地，见 [Session 管理设计](session-management.md)。SessionRuntime 和 writer 迁入 `src/session/`，旧 context 导出保持兼容；应用通过 SessionManager/SessionRunner 执行。独立模式升级为目录存储，旧单文件通过显式预览/导入保留兼容。

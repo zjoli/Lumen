@@ -118,7 +118,8 @@ pub(crate) fn validate_candidate(s: &State, tree: &files::FileTree, parents: &[C
     }
     for parent in parents {
         for (path, bytes) in commit_tree(s, parent)? {
-            if (path.starts_with("records/") || path.starts_with("sessions/"))
+            if (path.starts_with("records/")
+                || path.starts_with("sessions/") && path.ends_with(".jsonl"))
                 && tree.get(&path) != Some(&bytes)
             {
                 return Err(E::InvalidFormat(format!(

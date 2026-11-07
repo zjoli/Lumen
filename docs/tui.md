@@ -48,6 +48,10 @@ Esc 转入内容浏览，i 返回输入。F6、Shift+Tab 分别顺序、反向�
 
 `/compact` 安排下一请求前压缩；原始会话记录保留。`/skills` 列出用户、工作区和额外目录中的 Skill 及发现诊断。模型可以按需加载正文、读取资源、记录步骤并标记完成；活跃工作流在压缩后恢复。
 
-`/resume <session-id>` 恢复已有工作区会话，session ID 可从 `/context` 获取。独立文件模式自动恢复 `LUMEN_SESSION` 的最新会话；`/new` 追加新会话边界，保留旧归档。
+`/sessions [query]` 打开会话列表，支持标题与正文搜索、归档标记、输入过滤和键盘选择；PgDn 请求下一页。`/resume <session-id>` 恢复会话，ID 可从列表或 `/context` 获取。聊天滚动到顶部后 PgUp 加载更早记录；UI 分页不会扩大模型上下文。
+
+`/new [title]` 创建并选中新会话；`/session rename <title>`、`/session archive [id]`、`/session unarchive <id>` 管理元数据；`/session close` 释放当前会话。运行中切换被拒绝，先 `/stop` 并等待保存结束。不同会话分别保存草稿、阅读位置与引用；原文 revision 改变时清除旧选区。
+
+独立模式使用 `LUMEN_SESSION_DIR` 或平台应用数据目录，启动恢复最近会话。旧单文件通过 `/session preview <path>` 浏览、`/session import <path>` 导入，原件保留；`/session inspect <id>` 可只读查看归档或存在恢复诊断的会话。
 
 模型窗口容量、最大输出、协议格式及 Skill 目录配置见 [README](../README.md)。

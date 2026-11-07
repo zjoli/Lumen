@@ -6,6 +6,12 @@ pub type WorkspaceResult<T> = Result<T, WorkspaceError>;
 #[derive(Debug, Error, Serialize)]
 #[serde(tag = "code", content = "message")]
 pub enum WorkspaceError {
+    #[error("session busy: {0}")]
+    SessionBusy(String),
+    #[error("session archived: {0}")]
+    SessionArchived(String),
+    #[error("session cannot be continued: {0}")]
+    SessionUnavailable(String),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("ambiguous: {0}")]

@@ -287,6 +287,10 @@ async fn reading_is_not_replaced_by_streaming_answers_and_commands_restore_posit
         .unwrap()
         .flat_map(|entry| std::fs::read_dir(entry.unwrap().path()).unwrap())
         .map(|p| p.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
         .collect::<Vec<_>>();
     assert_eq!(segments.len(), 1);
     assert_eq!(segments[0].extension().unwrap(), "jsonl");
@@ -305,7 +309,8 @@ async fn cancellation_keeps_partial_reply_and_restores_draft() {
             .await
             .unwrap()
             .unwrap();
-        let partial = matches!(&event, AgentEvent::MessageDelta { .. });
+        let partial = matches!(&event, AgentEvent::MessageDelta { .. })
+            || matches!(&event,AgentEvent::SessionEvent{event,..}if matches!(event.as_ref(),AgentEvent::MessageDelta{..}));
         rt.ui.agent(event);
         if partial {
             break;
@@ -452,6 +457,7 @@ async fn context_commands_resume_durable_window_and_learning_evidence_without_du
     assert!(serde_json::to_string(&old_request)
         .unwrap()
         .contains(&event.metadata.id));
+    app.manager.as_mut().unwrap().close(None).unwrap();
     let mut resumed = Application::new();
     resumed.workspace = Some(w.clone());
     resumed.provider = Some(provider);
@@ -471,4 +477,169 @@ async fn context_commands_resume_durable_window_and_learning_evidence_without_du
         &old_request
     );
     w.close(CancellationToken::new()).await.unwrap();
+}
+
+#[tokio::test]
+async fn switching_sessions_restores_history_draft_reading_and_rejects_stale_events() {
+    let (_dir, w, id) = fixture().await;
+    let (mut rt, _) = runtime(w.clone(), false);
+    navigate(&mut rt).await;
+    rt.submit("/new 第一课".into());
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    let first = rt.ui.session_identity.clone().unwrap();
+    rt.submit("第一课问题".into());
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    rt.submit(format!("/open {}", id.as_str()));
+    navigate(&mut rt).await;
+    rt.ui.document.as_mut().unwrap().scroll = 2;
+    rt.ui.editor.set("第一课草稿".into());
+    rt.action(Action::Command(crate::commands::Command::NewTitled(
+        "第二课".into(),
+    )));
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    assert_ne!(rt.ui.session_identity.as_ref(), Some(&first));
+    assert!(rt.ui.editor.text.is_empty());
+    assert!(rt.ui.messages.is_empty());
+    rt.submit("第二课问题".into());
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    let second = rt.ui.session_identity.clone().unwrap();
+    rt.ui.editor.set("第二课草稿".into());
+    rt.action(Action::Command(crate::commands::Command::Resume(
+        first.session_id.clone(),
+    )));
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    navigate(&mut rt).await;
+    assert_eq!(rt.ui.editor.text, "第一课草稿");
+    assert_eq!(rt.ui.document.as_ref().unwrap().scroll, 2);
+    assert_eq!(rt.ui.view, View::Read);
+    assert!(rt
+        .ui
+        .messages
+        .iter()
+        .any(|message| message.body.contains("第一课问题")));
+    assert!(!rt
+        .ui
+        .messages
+        .iter()
+        .any(|message| message.body.contains("第二课问题")));
+    let count = rt.ui.messages.len();
+    rt.ui.agent(AgentEvent::SessionEvent {
+        identity: second,
+        run_id: "old".into(),
+        activation: 0,
+        event: Box::new(AgentEvent::MessageEnd(AgentMessage::Assistant(
+            AssistantMessage {
+                content: vec![ContentPart::Text("stale result".into())],
+                tool_calls: vec![],
+            },
+        ))),
+    });
+    assert_eq!(rt.ui.messages.len(), count);
+    rt.submit("/sessions".into());
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    assert!(rt.ui.session_panel);
+    assert_eq!(rt.ui.session_choices.len(), 2);
+    let mut terminal = Terminal::new(TestBackend::new(128, 40)).unwrap();
+    terminal
+        .draw(|frame| render::draw(frame, &mut rt.ui))
+        .unwrap();
+    assert!(screen(&terminal).contains("第一课"));
+    rt.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn paged_history_deduplicates_and_readonly_catalog_is_available_during_run() {
+    let (dir, w, _) = fixture().await;
+    let (mut rt, _) = runtime(w.clone(), true);
+    navigate(&mut rt).await;
+    rt.submit("/new paging".into());
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    // Import a legacy transcript with enough rows to require UI pagination.
+    let legacy = dir.path().join("history.jsonl");
+    let mut body = String::new();
+    for index in 0..130 {
+        body.push_str(
+            &serde_json::to_string(&SessionRecord {
+                message: if index % 2 == 0 {
+                    AgentMessage::User(vec![ContentPart::Text(format!("question-{index}"))])
+                } else {
+                    AgentMessage::Assistant(AssistantMessage {
+                        content: vec![ContentPart::Text(format!("answer-{index}"))],
+                        tool_calls: vec![],
+                    })
+                },
+            })
+            .unwrap(),
+        );
+        body.push('\n');
+    }
+    std::fs::write(&legacy, body).unwrap();
+    let id = rt
+        .app
+        .as_mut()
+        .unwrap()
+        .manager
+        .as_mut()
+        .unwrap()
+        .import_legacy(&legacy)
+        .await
+        .unwrap()
+        .remove(0);
+    rt.action(Action::Command(crate::commands::Command::Resume(id)));
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    assert_eq!(rt.ui.messages.len(), 50);
+    let cursor = rt.ui.history_before.clone().unwrap();
+    rt.action(Action::Command(crate::commands::Command::Session(
+        crate::commands::SessionCommand::History(Some(cursor)),
+    )));
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    assert_eq!(rt.ui.messages.len(), 100);
+    let count = rt.ui.messages.len();
+    let page = rt
+        .app
+        .as_ref()
+        .unwrap()
+        .manager
+        .as_ref()
+        .unwrap()
+        .history(
+            &rt.ui.session_identity.as_ref().unwrap().session_id,
+            None,
+            50,
+        )
+        .await
+        .unwrap();
+    rt.ui.prepend_history(page);
+    assert_eq!(rt.ui.messages.len(), count);
+    rt.submit("new question".into());
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), rt.agent_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let partial = matches!(&event,AgentEvent::SessionEvent{event,..}if matches!(event.as_ref(),AgentEvent::MessageDelta{..}));
+        rt.ui.agent(event);
+        if partial {
+            break;
+        }
+    }
+    rt.action(Action::Command(crate::commands::Command::Sessions(
+        String::new(),
+    )));
+    navigate(&mut rt).await;
+    assert!(rt.operation.is_some());
+    assert!(rt.ui.session_panel);
+    rt.action(Action::Cancel);
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    rt.shutdown().await.unwrap();
 }

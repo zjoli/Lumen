@@ -126,7 +126,9 @@ data: { outcome: partial, hints_used: 1 }
 
 `event_kind` 为 `study | answer | review | assessment | correction`。已保存事件不可修改；纠错新增事件并通过 `supersedes` 引用旧事件。汇总按纠错链消除被替代事件；排序采用 `(occurred_at, id)`，不将设备时钟视为严格因果顺序。推导算法版本记在本地索引中。
 
-会话沿用 `src/agent/session.rs` 的 `SessionRecord { message: AgentMessage }` JSONL 格式。每次运行使用独立片段 ID，只追加本次新增消息。活动文件使用 `.jsonl.open` 后缀，由 Git 忽略；关闭时原子重命名为 `.jsonl`，此后不可修改。恢复会话读取全部已关闭片段，片段内保持消息顺序，跨片段以 UUIDv7 稳定排序；并行产生的片段保留各自边界，不伪造线性对话。
+会话沿用 `src/agent/session.rs` 的 `SessionRecord { message: AgentMessage }` JSONL 格式，每个会话新增 `sessions/<session-id>/session.yaml` 保存可变元数据。每次运行使用独立片段 ID，只追加本次新增消息。活动文件使用 `.jsonl.open` 后缀，由 Git 忽略；关闭时原子重命名为 `.jsonl`，此后不可修改。新版片段通过 `lumen.segment_open` 的 parent/hash 形成明确续接链；旧片段保持原字节，作为 legacy 前缀引用。并发续接报告 Diverged，不按时间排序伪造线性对话。
+
+`SessionManager` 负责会话身份、目录、CAS 更新和 session 级租约，`SessionRunner` 负责 run 片段与 finally 收尾，`SessionRuntime` 负责历史和上下文。session.yaml 可重命名/归档并进入 Git；已关闭 JSONL 和学习事件仍不可改写。列表/正文搜索使用可重建的 `.lumen/session-index.sqlite`；设备草稿、阅读位置和最近会话指针不入 Git。详见 [Session 管理设计](session-management.md)。
 
 知识正文与学习证据用 Markdown；transcript 保留现有 JSONL 协议，不转换为知识对象。工作模式切换、同步和正常退出前关闭当前片段；启动时恢复中断片段，截断不完整尾行并保留原件后关闭。
 

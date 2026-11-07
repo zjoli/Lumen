@@ -22,7 +22,7 @@ use crossterm::{
     execute,
 };
 use futures_util::StreamExt;
-use service::Application;
+use service::{Application, CommandOutcome};
 use state::{Action, Focus, Reference, Ui, View};
 use std::{
     io::{self, IsTerminal},
@@ -36,7 +36,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-type Operation = JoinHandle<(Application, WorkspaceResult<String>)>;
+type Operation = JoinHandle<(Application, WorkspaceResult<CommandOutcome>)>;
 struct RestoreTerminal;
 impl Drop for RestoreTerminal {
     fn drop(&mut self) {
@@ -52,9 +52,14 @@ impl Drop for RestoreTerminal {
 enum ReadPurpose {
     Open,
     Refresh,
+    Restore,
     Reference,
 }
 enum Navigation {
+    SessionRead {
+        epoch: u64,
+        result: WorkspaceResult<CommandOutcome>,
+    },
     Catalog {
         epoch: u64,
         request: u64,
@@ -87,6 +92,8 @@ struct Runtime {
     reference_request: u64,
     quitting: bool,
     new_session: bool,
+    restoring_read: Option<crate::session::ReadingPosition>,
+    session_repository: Option<std::sync::Arc<crate::session::SessionRepository>>,
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -129,6 +136,11 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             startup_error = Some(e.to_string());
         }
     }
+    if startup_error.is_none() {
+        if let Err(error) = app.ensure_manager().await {
+            startup_error = Some(error.to_string());
+        }
+    }
     if plain || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         if let Some(e) = startup_error {
             eprintln!("{e}");
@@ -155,11 +167,22 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 impl Runtime {
-    fn new(app: Application, theme: Theme) -> Self {
+    fn new(mut app: Application, theme: Theme) -> Self {
         let (agent_tx, agent_rx) = mpsc::unbounded_channel();
         let (nav_tx, nav_rx) = mpsc::unbounded_channel();
+        let mut ui = Ui::new(app.model.clone(), theme);
+        if app.workspace.is_none() {
+            if let Some(view) = app.pending_view.take() {
+                ui.activate_session(&view);
+            }
+        }
+        let session_repository = app
+            .manager
+            .as_ref()
+            .map(|manager| manager.repository().clone());
         Self {
-            ui: Ui::new(app.model.clone(), theme),
+            ui,
+            session_repository,
             app: Some(app),
             operation: None,
             cancel: CancellationToken::new(),
@@ -177,6 +200,7 @@ impl Runtime {
             reference_request: 0,
             quitting: false,
             new_session: false,
+            restoring_read: None,
         }
     }
     fn update_workspace(&mut self) {
@@ -194,6 +218,9 @@ impl Runtime {
         self.epoch += 1;
         self.workspace = next;
         self.workspace_events = self.workspace.as_ref().map(|w| w.subscribe());
+        self.ui.session_identity = None;
+        self.ui.history_keys.clear();
+        self.ui.history_before = None;
         self.ui.tree = tree::Tree::default();
         self.ui.document = None;
         self.ui.reference = None;
@@ -218,6 +245,16 @@ impl Runtime {
             .unwrap_or_else(|| "未打开工作区".into());
         self.ui.view = View::Chat;
         self.reload();
+        if let Some(view) = self.app.as_mut().and_then(|app| app.pending_view.take()) {
+            let reading = view.ui.reading.clone();
+            self.ui.activate_session(&view);
+            if let Some(reading) = reading {
+                self.ui.positions.insert(reading.id.clone(), reading.scroll);
+                self.ui.view = View::Read;
+                self.restoring_read = Some(reading.clone());
+                self.open(reading.id.to_string(), vec![], ReadPurpose::Restore);
+            }
+        }
     }
     fn reload(&mut self) {
         let Some(w) = self.workspace.clone() else {
@@ -254,7 +291,7 @@ impl Runtime {
                 self.reference_request += 1;
                 self.reference_request
             }
-            ReadPurpose::Open => {
+            ReadPurpose::Open | ReadPurpose::Restore => {
                 self.read_request += 1;
                 self.read_request
             }
@@ -278,6 +315,19 @@ impl Runtime {
     }
     fn navigation(&mut self, event: Navigation) {
         match event {
+            Navigation::SessionRead { epoch, result } if epoch == self.epoch => match result {
+                Ok(CommandOutcome::Sessions(page)) => {
+                    self.ui.session_next = page.next_cursor;
+                    self.ui.session_query = page.query;
+                    self.ui.session_choices = page.items;
+                    self.ui.session_filter.clear();
+                    self.ui.session_choice = 0;
+                    self.ui.session_panel = true;
+                }
+                Ok(CommandOutcome::History(page)) => self.ui.prepend_history(page),
+                Ok(outcome) => self.ui.message("系统", outcome.render()),
+                Err(error) => self.ui.notify(error.to_string(), true),
+            },
             Navigation::Catalog {
                 epoch,
                 request,
@@ -314,6 +364,15 @@ impl Runtime {
                         self.ui.focus = Focus::Input;
                     }
                     Ok(object) => {
+                        if purpose == ReadPurpose::Restore {
+                            if let Some(saved) = self.restoring_read.take() {
+                                if saved.revision != object.revision.0 {
+                                    self.ui.positions.insert(saved.id, 0);
+                                    self.ui.reference = None;
+                                    self.ui.notify("阅读原文已更新，旧选区已清除。", false);
+                                }
+                            }
+                        }
                         if purpose == ReadPurpose::Refresh
                             && !self
                                 .ui
@@ -354,6 +413,7 @@ impl Runtime {
     fn action(&mut self, action: Action) {
         match action {
             Action::Submit(value) => self.submit(value),
+            Action::Command(command) => self.submit_parsed("会话操作".into(), Some(command)),
             Action::Reload => self.reload(),
             Action::Open(id, path) => self.open(id.to_string(), path, ReadPurpose::Open),
             Action::Attach(id) => self.open(id.to_string(), vec![], ReadPurpose::Reference),
@@ -397,6 +457,9 @@ impl Runtime {
             return;
         }
         let command = commands::parse(&value);
+        self.submit_parsed(value, command);
+    }
+    fn submit_parsed(&mut self, value: String, command: Option<Command>) {
         if value.starts_with('/') && command.is_none() {
             self.ui.notify("未知命令，输入 /help 查看帮助。", true);
             return;
@@ -460,6 +523,27 @@ impl Runtime {
             _ => (),
         }
         if self.operation.is_some() {
+            if let (Some(command), Some(repo)) = (
+                command
+                    .as_ref()
+                    .filter(|cmd| service::session_read_command(cmd)),
+                self.session_repository.clone(),
+            ) {
+                let (tx, epoch, id, command) = (
+                    self.nav_tx.clone(),
+                    self.epoch,
+                    self.ui
+                        .session_identity
+                        .as_ref()
+                        .map(|identity| identity.session_id.clone()),
+                    command.clone(),
+                );
+                self.jobs.spawn(async move {
+                    let result = service::read_session_command(repo, id, command).await;
+                    let _ = tx.send(Navigation::SessionRead { epoch, result });
+                });
+                return;
+            }
             self.ui
                 .notify("任务进行中，草稿已保留；Ctrl+C 停止后再发送。", false);
             return;
@@ -467,12 +551,16 @@ impl Runtime {
         let Some(mut app) = self.app.take() else {
             return;
         };
-        self.new_session = matches!(command, Some(Command::New));
+        self.new_session = matches!(command, Some(Command::New | Command::NewTitled(_)));
         let reference = if command.is_none() {
             self.ui.reference.clone()
         } else {
             None
         };
+        app.local_ui = self.ui.session_ui();
+        if command.is_none() || self.ui.editor.text.trim() == value {
+            app.local_ui.draft.clear();
+        }
         self.ui.editor.take();
         self.ui.completions_hidden = true;
         self.ui.notice = None;
@@ -487,17 +575,29 @@ impl Runtime {
         } else if self.ui.view == View::Chat {
             self.ui.follow = true;
         }
-        self.ui
-            .message(if command.is_some() { "命令" } else { "你" }, &value);
+        if !matches!(
+            command,
+            Some(
+                Command::Sessions(_)
+                    | Command::SessionsNext { .. }
+                    | Command::Session(crate::commands::SessionCommand::History(_))
+            )
+        ) {
+            self.ui
+                .message(if command.is_some() { "命令" } else { "你" }, &value);
+        }
         self.cancel = CancellationToken::new();
         let cancel = self.cancel.clone();
         let events = self.agent_tx.clone();
         self.operation = Some(tokio::spawn(async move {
             let result = if let Some(command) = command {
-                app.command(command, cancel).await
+                app.dispatch(command, cancel).await
             } else {
                 match referenced_input(&app, value, reference, cancel.clone()).await {
-                    Ok(input) => app.chat(input, cancel, events).await,
+                    Ok(input) => app
+                        .chat(input, cancel, events)
+                        .await
+                        .map(CommandOutcome::Text),
                     Err(e) => Err(e),
                 }
             };
@@ -506,7 +606,7 @@ impl Runtime {
     }
     fn completed(
         &mut self,
-        result: Result<(Application, WorkspaceResult<String>), tokio::task::JoinError>,
+        result: Result<(Application, WorkspaceResult<CommandOutcome>), tokio::task::JoinError>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(event) = self.agent_rx.try_recv() {
             self.ui.agent(event);
@@ -514,24 +614,45 @@ impl Runtime {
         self.operation = None;
         let (app, result) = result?;
         self.ui.model = app.model.clone();
+        self.session_repository = app
+            .manager
+            .as_ref()
+            .map(|manager| manager.repository().clone());
         self.app = Some(app);
         self.ui.busy = false;
         self.ui.streaming = None;
         self.ui.activity.clear();
+        self.update_workspace();
         match result {
-            Ok(output) => {
-                if self.new_session {
-                    self.ui.messages.clear();
-                    self.ui.chat_links.clear();
-                    self.ui.chat_link = None;
-                    self.ui.chat_scroll = 0;
-                    self.ui.follow = true;
-                    self.ui.unread = 0;
-                    self.ui.reference = None;
-                    self.ui.chat();
-                }
-                if !output.is_empty() {
-                    self.ui.message("系统", output);
+            Ok(outcome) => {
+                match outcome {
+                    CommandOutcome::Activated(view) => {
+                        self.read_request += 1;
+                        self.reference_request += 1;
+                        let reading = view.ui.reading.clone();
+                        self.ui.activate_session(&view);
+                        if let Some(reading) = reading {
+                            self.ui.view = View::Read;
+                            self.ui.positions.insert(reading.id.clone(), reading.scroll);
+                            self.restoring_read = Some(reading.clone());
+                            self.open(reading.id.to_string(), vec![], ReadPurpose::Restore);
+                        }
+                    }
+                    CommandOutcome::Closed => self.ui.close_session(),
+                    CommandOutcome::Sessions(page) => {
+                        self.ui.session_next = page.next_cursor;
+                        self.ui.session_query = page.query;
+                        self.ui.session_choices = page.items;
+                        self.ui.session_filter.clear();
+                        self.ui.session_choice = 0;
+                        self.ui.session_panel = true;
+                    }
+                    CommandOutcome::History(page) => self.ui.prepend_history(page),
+                    CommandOutcome::Text(output) => {
+                        if !output.is_empty() {
+                            self.ui.message("系统", output);
+                        }
+                    }
                 }
                 self.ui.last_submission = None;
             }
@@ -606,6 +727,11 @@ impl Runtime {
         if let Some(operation) = self.operation.take() {
             if let Ok((app, _)) = operation.await {
                 self.app = Some(app);
+            }
+        }
+        if let Some(app) = self.app.as_mut() {
+            if let Some(manager) = app.manager.as_mut() {
+                manager.close(Some(&self.ui.session_ui()))?;
             }
         }
         if let Some(w) = self

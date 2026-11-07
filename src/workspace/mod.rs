@@ -5,6 +5,7 @@ use crate::{knowledge::*, retrieval, versioning};
 pub use error::*;
 use serde::{Deserialize, Serialize};
 pub(crate) use session::finish_all as session_finish_all;
+pub(crate) use session::recover_session_segments;
 pub use session::*;
 use std::{
     fs,
