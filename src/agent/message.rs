@@ -37,7 +37,7 @@ pub enum AgentMessage {
     Custom { kind: String, content: Value },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum StopReason {
     Completed,
     Aborted,

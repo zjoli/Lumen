@@ -2,6 +2,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error, Clone)]
 pub enum AgentError {
+    #[error("context error: {0}")]
+    Context(String),
+    #[error("session error: {0}")]
+    Session(String),
     #[error("model error: {0}")]
     Model(String),
     #[error("tool error: {0}")]

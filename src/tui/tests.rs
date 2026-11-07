@@ -379,3 +379,96 @@ async fn stale_selection_is_rejected_and_catalog_is_fully_paginated() {
     );
     w.close(CancellationToken::new()).await.unwrap();
 }
+
+#[tokio::test]
+async fn context_commands_resume_durable_window_and_learning_evidence_without_duplicate_messages() {
+    let (_dir, w, id) = fixture().await;
+    let event = w
+        .learning()
+        .append(
+            crate::knowledge::AppendEvent {
+                event_kind: crate::knowledge::EventKind::Assessment,
+                occurred_at: None,
+                targets: vec![id.clone()],
+                session_id: None,
+                supersedes: None,
+                data: serde_json::json!({"outcome":"partial"}),
+                body: "assessment evidence".into(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let requests = Arc::new(Mutex::new(vec![]));
+    let provider = Arc::new(TestProvider {
+        requests: requests.clone(),
+        wait: false,
+    });
+    let mut app = Application::new();
+    app.workspace = Some(w.clone());
+    app.provider = Some(provider.clone());
+    let (tx, _rx) = mpsc::unbounded_channel();
+    app.chat(
+        format!("解释 {}", id.as_str()),
+        CancellationToken::new(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    let context: serde_json::Value = serde_json::from_str(
+        &app.command(crate::commands::Command::Context, CancellationToken::new())
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(context["regions"]["C_task"].as_u64().unwrap() > 0);
+    let session_id = context["session_id"].as_str().unwrap().to_string();
+    app.chat("再举一个例子".into(), CancellationToken::new(), tx.clone())
+        .await
+        .unwrap();
+    let transcript = w
+        .sessions()
+        .load(session_id.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+    let raw: Vec<_> = transcript
+        .segments
+        .iter()
+        .flat_map(|s| &s.messages)
+        .collect();
+    assert_eq!(
+        raw.iter()
+            .filter(|m| matches!(m, AgentMessage::User(_)))
+            .count(),
+        2
+    );
+    assert_eq!(
+        raw.iter()
+            .filter(|m| matches!(m, AgentMessage::Assistant(_)))
+            .count(),
+        2
+    );
+    let old_request = requests.lock().unwrap().last().unwrap().messages.clone();
+    assert!(serde_json::to_string(&old_request)
+        .unwrap()
+        .contains(&event.metadata.id));
+    let mut resumed = Application::new();
+    resumed.workspace = Some(w.clone());
+    resumed.provider = Some(provider);
+    resumed
+        .command(
+            crate::commands::Command::Resume(session_id),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    resumed
+        .chat("继续".into(), CancellationToken::new(), tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        &requests.lock().unwrap().last().unwrap().messages[..old_request.len()],
+        &old_request
+    );
+    w.close(CancellationToken::new()).await.unwrap();
+}

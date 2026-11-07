@@ -4,6 +4,8 @@
 **日期：** 2026-10-14  
 **适用范围：** Lumen 的 Rust Agent runtime、TUI、模型适配器、工具和可插拔上下文能力
 
+**实现更新（2026-11-05）：** 已接入分阶段上下文插件、SessionRuntime、请求封存和结构化压缩。本文保留早期接口示意；当前接口以 `src/agent/` 和 [插件集成方案第 14 节](context-management-implementation.md#14-首版实现说明2026-11-05) 为准。
+
 本文是 Agent Loop 的架构事实依据。它记录 Lumen 当前采用的边界和行为约定；实现可以逐步落地，但不应在没有更新本文的情况下改变核心语义。
 
 ## 背景
@@ -137,6 +139,10 @@ AgentMessage[]
 - 切换模型或 reasoning level；
 - 过滤仅供 UI 使用的消息。
 
+上下文窗口的区域、预算、缓存、Skill 生命周期与压缩检查点方案见 [上下文窗口设计](context-window.md)。首版实现及保守策略见配套实现方案第 14 节。
+
+对应的 [插件集成与实现决策](context-management-implementation.md) 已落地唯一协调角色、候选收集/最终装配、统一消息提交与请求封存。普通插件仍按注册顺序执行，协调插件在请求和工具结果阶段最后处理；PluginContext 的 state 现为只读。
+
 ## 插件模型
 
 插件围绕生命周期注册，而不是重新实现 Agent：
@@ -253,7 +259,7 @@ Concrete implementations -> traits
 - 事件顺序稳定；
 - 并行工具的结果仍按 assistant 原始调用顺序写入上下文。
 
-## 当前实现（2026-10-14）
+## 早期实现记录（2026-10-14）
 
 实现位于 `src/agent/`，可以运行 `cargo run --example minimal_agent` 和 `cargo test`。
 
@@ -267,9 +273,9 @@ Concrete implementations -> traits
 - `AgentResult.error` 保存运行错误，结果包含已完成消息。取消和错误也发送 AgentEnd。end hook 的错误发送 Error，不覆盖原始停止原因。
 - 默认工具超时为 30 秒，整个 run 超时为 300 秒，end hook 超时为 5 秒。取消会丢弃正在等待的 future；插件和工具不得启动脱离运行生命周期的后台工作。
 
-当前接口是 Rust API 草案，不保证二进制 ABI 稳定。PluginContext 暂时提供可变 state，因此插件必须遵守不改写工具调用 ID、已提交消息和消息顺序的约定。第一版采用进程内 Rust trait 插件；动态库、WASM 或脚本加载尚未实现。
+该阶段接口为 Rust API 草案，不保证二进制 ABI 稳定，当时 PluginContext 提供可变 state；2026-11-04 已改为只读。插件采用进程内 Rust trait；动态库、WASM 或脚本插件加载尚未实现。
 
-尚未实现真实模型适配器、TUI、队列输入、session 持久化和上下文压缩插件。`before_request` 是上下文策略入口，不额外引入独立 transformer trait。流式增量用于展示，只有 Complete 消息写入 transcript；供应商必须把截断工具调用编码为 Error，禁止执行不完整参数。事件 channel 和结果 trace 当前没有大小限制，调用方应持续消费 channel。
+该阶段尚未实现真实模型适配器、TUI、队列输入、session 持久化和上下文压缩，后续已陆续落地。`before_request` 仍是上下文策略入口；流式增量用于展示，只有 Complete 消息写入 transcript。事件 channel 和结果 trace 当前没有大小限制，调用方应持续消费 channel。
 
 ## 第二阶段模块
 
@@ -278,5 +284,5 @@ Concrete implementations -> traits
 - `HttpProvider::openai` 和 `HttpProvider::anthropic`：使用 reqwest 调用兼容 OpenAI Chat Completions 和 Anthropic Messages 的 HTTP endpoint；工具声明和 OpenAI tool calls 已转换为统一消息。生产环境应在此基础上补 SSE 增量解析、重试、速率限制和 provider-specific tool result。
 - `SessionStore`：以 JSONL 追加 `AgentMessage`，支持异步 `append` 和 `load`。它是 transcript 存储，不自动改变 Loop；应用层可在 `MessageEnd` 或 `AgentEnd` 时写入。
 - `MessageQueue`：区分 `User`、`Steering`、`FollowUp` 和 `Stop` 输入，为外层 session runner 提供有界异步队列。
-- `CompactionPlugin`：按消息数阈值生成摘要并保留近期消息。摘要以 `Custom` 消息进入请求投影，原始 state 不被删除；生产版本应替换为模型摘要、token 估算和可恢复的 compaction entry。
+- `CompactionPlugin`：保留为显式 legacy 路径，按消息数截取旧文本；协调模式禁止与它混用。应用现使用 `ContextWindowPlugin` 的预算、模型摘要和可恢复检查点。
 - `lumen-tui`：最小终端交互程序，展示当前 Agent 输出并支持 `/quit`。完整键盘驱动 TUI 应继续消费 `with_event_sink` 的事件 channel。

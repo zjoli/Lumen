@@ -114,6 +114,12 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 模型对话使用 `LUMEN_MODEL_ENDPOINT`、`LUMEN_MODEL_KEY`、`LUMEN_MODEL`；未配置时保留本地命令与示例响应。向量、重排、摘要通过 Rust provider trait 注入；无 provider 时检索降级为全文，概览使用确定性导航。后台索引任务随工作区关闭而取消并等待退出。
 
+上下文由统一插件管理，检索与 Skill 按需追加，达到水位时生成结构化摘要并提交可恢复检查点。`/context` 查看窗口分区与预留，`/compact` 安排下一请求前压缩，`/skills` 查看本地 Skill，`/resume <session-id>` 恢复工作区会话。独立文件模式自动恢复 `LUMEN_SESSION` 指向的文件，`/new` 保留旧归档并开始新会话。
+
+`LUMEN_CONTEXT_TOKENS` 配置模型实际窗口容量（默认 128000），`LUMEN_OUTPUT_TOKENS` 配置最大输出（默认不超过 4096 和窗口的 1/8）；小窗口会同步缩小工具与安全预留。首版按 UTF-8 字节和协议开销保守估算 token，需按所用模型配置容量；API usage 单独报告实际用量。`LUMEN_MODEL_FORMAT=anthropic` 可选 Anthropic Messages，默认使用 OpenAI 兼容 Chat Completions；`LUMEN_PROMPT_CACHE=false` 关闭显式缓存标记。当前 HTTP adapter 保留完整响应模式，尚未接入 SSE。
+
+Skill 从 `~/.agents/skills/`、工作区 `.agents/skills/` 和 `LUMEN_SKILLS_DIR` 指定的额外目录发现。模型通过 `skill_search`、`skill_load`、`skill_resource`、`skill_progress`、`skill_finish` 使用工作流；活跃正文和步骤随检查点恢复。工作区 `LUMEN.md`、`AGENTS.md` 可提供持续指导，相关学习状态从已有学习证据推导。
+
 Rust API 示例见 [knowledge_workspace.rs](examples/knowledge_workspace.rs)。`/help` 列出全部命令，包括冲突解决、历史恢复和索引维护。开发构建需要 C 编译器、make、Perl 和 pkg-config；libgit2、SQLite 及 Linux 的 OpenSSL、D-Bus 库从源码构建。
 
 ## 参与开发
@@ -123,6 +129,9 @@ Rust API 示例见 [knowledge_workspace.rs](examples/knowledge_workspace.rs)。`
 ## 架构设计
 
 - [Agent Loop](docs/architecture/agent-loop.md)
+- [上下文窗口、缓存、Skill 与压缩设计](docs/architecture/context-window.md)
+- [上下文管理的插件集成与实现决策](docs/architecture/context-management-implementation.md)
+- [Session 管理设计](docs/architecture/session-management.md)
 - [知识存储、检索与同步](docs/architecture/knowledge-storage.md)
 
 ## License

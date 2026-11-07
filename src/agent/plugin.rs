@@ -3,15 +3,22 @@ use async_trait::async_trait;
 
 pub struct PluginContext<'a> {
     pub cancel: tokio_util::sync::CancellationToken,
-    pub state: &'a mut AgentState,
+    pub state: &'a AgentState,
     pub events: &'a mut super::EventLog,
 }
-pub struct BeforeRequest<'a> {
-    pub messages: &'a mut Vec<AgentMessage>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PluginRole {
+    Standard,
+    ContextCoordinator,
+}
+pub enum BeforeRequest<'a> {
+    Legacy { messages: &'a mut Vec<AgentMessage> },
+    Collect(&'a mut crate::context::ContextCollector),
+    Assemble(&'a mut crate::context::ContextAssembly),
 }
 pub struct BeforeToolCall<'a> {
     pub assistant: &'a AssistantMessage,
-    pub call: &'a mut ToolCall,
+    pub call: &'a ToolCall,
 }
 pub enum ToolDecision {
     Allow,
@@ -20,6 +27,7 @@ pub enum ToolDecision {
 pub struct AfterToolCall<'a> {
     pub call: &'a ToolCall,
     pub result: &'a mut ToolResultMessage,
+    pub original: &'a ToolResultMessage,
 }
 pub enum Continuation {
     Default,
@@ -33,6 +41,15 @@ pub struct TurnEnd<'a> {
 
 #[async_trait]
 pub trait AgentPlugin: Send + Sync {
+    fn role(&self) -> PluginRole {
+        PluginRole::Standard
+    }
+    fn legacy_request_mutator(&self) -> bool {
+        false
+    }
+    fn context_session(&self) -> Option<std::sync::Arc<crate::context::SessionRuntime>> {
+        None
+    }
     async fn before_agent_start(&self, _ctx: &mut PluginContext<'_>) -> Result<(), AgentError> {
         Ok(())
     }

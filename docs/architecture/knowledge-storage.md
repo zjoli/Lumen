@@ -439,9 +439,9 @@ Git 写操作、远端配置、冲突解决、历史恢复、索引重建仅通�
 
 ### 7.2 自动上下文
 
-`RetrievalPlugin` 实现现有 `AgentPlugin::before_request`：读取当前查询 → 调用 `context` → 将带来源的文本加入 `BeforeRequest.messages`。不修改 `PluginContext.state.messages`，不重复持久化检索投影。
+`RetrievalPlugin` 通过 `AgentPlugin::before_request` 的 Collect 阶段提供带来源的候选；ContextWindowPlugin 在统一预算下决定采用的内容，随后追加到窗口并保存 context journal。它不修改原始用户消息或系统提示；续轮复用同一用户输入的检索，知识写入工具会使触发键变化。
 
-当前 Loop 会过滤 `AgentMessage::Custom`，因此模型可见上下文使用现有文本消息；不能只注入 Custom。为现有 `PluginContext` 新增 `pub cancel: CancellationToken`，由 Loop 向各 hook 传递本次 run 的子令牌；这是通用取消接口扩展，不引入存储依赖。检索失败只报告降级，不阻断普通对话；恢复/冲突状态禁用自动注入。
+ContextStore 的 Custom 记录作为内部控制格式，恢复时显式重建模型可见投影；未知 Custom 不直接发送给模型。PluginContext.state 为只读，cancel 继续贯穿各 hook。检索失败只报告降级，不阻断普通对话；恢复/冲突状态禁用自动注入。首版内部格式与恢复边界见 [上下文实现说明](context-management-implementation.md#14-首版实现说明2026-11-05)。
 
 当前工具执行上限 30 秒；模型工具只执行有界操作，不在工具中等待完整重建或长时间摘要生成。维护任务由应用管理，通过工作区事件报告进度。
 

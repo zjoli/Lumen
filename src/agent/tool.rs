@@ -55,10 +55,19 @@ impl ToolRegistry {
                 is_error: true,
             };
         }
+        if cancel.is_cancelled() {
+            return ToolResultMessage {
+                terminate: false,
+                tool_call_id: call.id.clone(),
+                content: vec![ContentPart::Text("cancelled before execution".into())],
+                is_error: true,
+            };
+        }
         let child = cancel.child_token();
         let outcome = tokio::select! {
-            _ = cancel.cancelled() => Err(AgentError::Aborted),
+            biased;
             result = tokio::time::timeout(std::time::Duration::from_secs(30), tool.execute(call.arguments.clone(), ToolContext { cancel: child.clone() })) => result.unwrap_or_else(|_| Err(AgentError::Tool("tool timeout".into()))),
+            _ = cancel.cancelled() => Err(AgentError::Aborted),
         };
         child.cancel();
         match outcome {

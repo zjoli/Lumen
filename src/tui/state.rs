@@ -71,6 +71,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/clear", "清空对话显示"),
     ("/model", "查看或切换模型"),
     ("/status", "查看工作区状态"),
+    ("/context", "查看上下文窗口与活跃 Skill"),
+    ("/compact", "安排上下文压缩"),
+    ("/skills", "查看可用 Skill"),
+    ("/resume", "恢复工作区会话"),
     ("/commit", "提交工作区"),
     ("/sync", "同步"),
     ("/history", "版本历史"),
@@ -271,6 +275,12 @@ impl Ui {
                 }
             }
             AgentEvent::AgentStart | AgentEvent::TurnStart => self.activity = "正在思考…".into(),
+            AgentEvent::ContextCompactionStart => self.activity = "正在压缩上下文…".into(),
+            AgentEvent::ContextPrepared {
+                input_tokens,
+                input_budget,
+                ..
+            } => self.activity = format!("上下文约 {input_tokens}/{input_budget} tokens"),
             AgentEvent::ToolExecutionStart(call) => {
                 self.activity = format!("正在执行 {}", text::clean(&call.name))
             }
