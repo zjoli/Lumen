@@ -143,7 +143,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if plain || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         if let Some(e) = startup_error {
-            eprintln!("{e}");
+            return Err(e.into());
         }
         return service::run_plain(app).await;
     }
@@ -153,7 +153,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     execute!(
         io::stdout(),
         EnableBracketedPaste,
-        SetCursorStyle::SteadyBar
+        SetCursorStyle::SteadyBlock
     )?;
     let mut runtime = Runtime::new(app, theme);
     runtime.update_workspace();
@@ -591,7 +591,7 @@ impl Runtime {
         let events = self.agent_tx.clone();
         self.operation = Some(tokio::spawn(async move {
             let result = if let Some(command) = command {
-                app.dispatch(command, cancel).await
+                app.dispatch_interactive(command, cancel, events).await
             } else {
                 match referenced_input(&app, value, reference, cancel.clone()).await {
                     Ok(input) => app

@@ -127,6 +127,108 @@ fn input_shortcuts_do_not_trigger_reader_actions_and_completion_is_available() {
     assert_eq!(ui.editor.text, "/theme auto ");
 }
 
+#[test]
+fn command_candidates_accept_enter_and_tab_before_submitting_the_completed_command() {
+    for confirm in [KeyCode::Enter, KeyCode::Tab] {
+        let mut ui = Ui::new("mock".into(), Theme::Auto);
+        ui.editor.set("/the".into());
+        assert!(ui
+            .key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .is_none());
+        assert_eq!(ui.candidates()[ui.candidate].label, "/theme light");
+        assert!(ui.key(KeyEvent::new(confirm, KeyModifiers::NONE)).is_none());
+        assert_eq!(ui.editor.text, "/theme light ");
+        assert_eq!(ui.focus, Focus::Input);
+        assert!(ui.candidates().is_empty());
+        assert!(
+            matches!(ui.key(KeyEvent::new(KeyCode::Enter,KeyModifiers::NONE)),Some(Action::Submit(text)) if text=="/theme light ")
+        );
+    }
+    for command in ["/session", "/sessions", "/model", "/models", "/sync"] {
+        let mut ui = Ui::new("mock".into(), Theme::Auto);
+        ui.editor.set(command.into());
+        assert_eq!(ui.candidates()[0].label, command);
+        assert!(
+            matches!(ui.key(KeyEvent::new(KeyCode::Enter,KeyModifiers::NONE)),Some(Action::Submit(text)) if text==command)
+        );
+    }
+}
+
+#[test]
+fn command_list_scrolls_to_the_selected_entry_and_escape_keeps_the_draft() {
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.editor.set("/".into());
+    for _ in 0..12 {
+        ui.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    let selected = ui.candidates()[ui.candidate].label.clone();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+    assert!(screen(&terminal).contains(&format!("› {selected}")));
+    assert!(ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .is_none());
+    assert_eq!(ui.editor.text, format!("{selected} "));
+
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.editor.set("/the".into());
+    ui.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(ui.candidates().is_empty());
+    assert_eq!(ui.editor.text, "/the");
+    assert_eq!(ui.focus, Focus::Input);
+    ui.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(ui.focus, Focus::Content);
+}
+
+#[test]
+fn completing_a_command_in_the_middle_preserves_arguments_and_unicode_boundaries() {
+    for (input, cursor, choice, expected) in [
+        (
+            "/workspace init \"/tmp/学习 空间\"",
+            3,
+            "/workspace open",
+            "/workspace open \"/tmp/学习 空间\"",
+        ),
+        ("/mod research", 4, "/model", "/model research"),
+        ("/mo　研究模型", 3, "/model", "/model　研究模型"),
+    ] {
+        let mut ui = Ui::new("mock".into(), Theme::Auto);
+        ui.editor.set(input.into());
+        ui.editor.cursor = cursor;
+        let index = ui
+            .candidates()
+            .iter()
+            .position(|c| c.label == choice)
+            .unwrap();
+        for _ in 0..index {
+            ui.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        assert!(ui
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .is_none());
+        assert_eq!(ui.editor.text, expected);
+        assert!(ui.editor.text.is_char_boundary(ui.editor.cursor));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+    }
+}
+
+#[test]
+fn enter_confirms_a_selected_knowledge_reference_without_submitting_the_question() {
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    let first = ObjectMetadata::new(ObjectKind::Concept, "事务原子性");
+    let second = ObjectMetadata::new(ObjectKind::Concept, "事务隔离性");
+    let selected = second.id.clone();
+    ui.tree.objects = vec![first, second];
+    ui.editor.set("请解释 @事务".into());
+    ui.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(
+        matches!(ui.key(KeyEvent::new(KeyCode::Enter,KeyModifiers::NONE)),Some(Action::Attach(id)) if id==selected)
+    );
+    assert_eq!(ui.editor.text, "请解释 ");
+    assert_eq!(ui.focus, Focus::Input);
+}
+
 struct TestProvider {
     requests: Arc<Mutex<Vec<ModelRequest>>>,
     wait: bool,
@@ -737,4 +839,94 @@ async fn provider_commands_select_alias_without_credentials_and_preserve_selecti
     );
     app.manager.as_mut().unwrap().close(None).unwrap();
     w.close(CancellationToken::new()).await.unwrap();
+}
+
+#[tokio::test]
+async fn study_commands_manage_routes_and_tutor_through_the_normal_session() {
+    let (_dir, w, _) = fixture().await;
+    let requests = Arc::new(Mutex::new(vec![]));
+    let mut app = Application::new();
+    app.workspace = Some(w.clone());
+    app.provider = Some(Arc::new(TestProvider {
+        requests: requests.clone(),
+        wait: false,
+    }));
+    for input in [
+        "/goal create '学习事务' '能解释并发异常'",
+        "/goal set 学习事务 baseline '了解 SQL'",
+        "/goal set 学习事务 weekly_minutes 240",
+        "/plan add 学习事务 30 原子性 '解释回滚与提交'",
+        "/plan add 学习事务 45 隔离性 '解释隔离级别与并发异常'",
+    ] {
+        app.command(commands::parse(input).unwrap(), CancellationToken::new())
+            .await
+            .unwrap();
+    }
+    let study = crate::study::StudyService(w.clone());
+    let goal = study
+        .resolve("学习事务", CancellationToken::new())
+        .await
+        .unwrap();
+    let progress = study
+        .progress(goal.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(progress.total_minutes, 75);
+    let first = progress.units[0].id.clone();
+    let second = progress.units[1].id.clone();
+    for input in [
+        format!("/plan move 学习事务 {second} 1"),
+        format!("/plan done {second} 已完成练习"),
+        "/review 学习事务 原子性需要更多例子".into(),
+    ] {
+        app.command(commands::parse(&input).unwrap(), CancellationToken::new())
+            .await
+            .unwrap();
+    }
+    let report = app
+        .command(
+            commands::parse("/progress 学习事务").unwrap(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(report.contains("1/2"));
+    assert!(report.contains(&format!("/study {first}")));
+    let progress = study
+        .progress(goal, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(progress.recent_reviews[0].body.contains("更多例子"));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    app.dispatch_interactive(
+        Command::Study(first.to_string()),
+        CancellationToken::new(),
+        tx,
+    )
+    .await
+    .unwrap();
+    assert!(rx.try_recv().is_ok());
+    {
+        let requests = requests.lock().unwrap();
+        assert!(requests.iter().flat_map(|r|&r.messages).any(|m|matches!(m,AgentMessage::User(parts) if parts.iter().any(|ContentPart::Text(t)|t.contains("诊断问题") && t.contains("解释回滚与提交")))));
+        assert!(requests
+            .iter()
+            .flat_map(|r| &r.tools)
+            .any(|t| t.name == "plan_apply"));
+    }
+    assert!(app.manager.as_ref().unwrap().active().is_some());
+    app.manager.as_mut().unwrap().close(None).unwrap();
+    w.close(CancellationToken::new()).await.unwrap();
+}
+
+#[test]
+fn model_status_tracks_the_selected_model_instead_of_legacy_environment_variables() {
+    let mut ui = Ui::new("research".into(), Theme::Auto);
+    let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+    assert!(screen(&terminal).contains("就绪"));
+    assert!(!screen(&terminal).contains("演示模式"));
+    ui.model = "mock".into();
+    terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+    assert!(screen(&terminal).contains("演示模式"));
 }

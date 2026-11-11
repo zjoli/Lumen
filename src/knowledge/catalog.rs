@@ -101,6 +101,7 @@ impl Catalog {
         for (id, (object, _, path)) in &c.objects {
             let meta = &object.metadata;
             let result = (|| -> R<()> {
+                crate::study::validate_goal(meta, &c)?;
                 if meta.question_kind.is_some() && meta.kind != ObjectKind::Question
                     || meta.origin.is_some() && meta.kind != ObjectKind::Resource
                 {

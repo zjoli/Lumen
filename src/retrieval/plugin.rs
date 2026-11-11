@@ -58,6 +58,10 @@ impl AgentPlugin for RetrievalPlugin {
                         | "knowledge_apply"
                         | "learning_record"
                         | "resource_import"
+                        | "goal_create"
+                        | "goal_update"
+                        | "plan_apply"
+                        | "web_import"
                 )
             })
             .count();

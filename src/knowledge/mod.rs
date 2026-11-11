@@ -7,6 +7,7 @@ use crate::workspace::{
     check_cancel, files, WorkspaceError as E, WorkspaceHandle, WorkspaceResult as R,
 };
 pub(crate) use catalog::Catalog;
+pub(crate) use learning::derive_state as learning_states;
 pub use learning::*;
 use std::collections::BTreeMap;
 use tokio_util::sync::CancellationToken;

@@ -68,6 +68,29 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/theme light", "浅色主题"),
     ("/theme dark", "深色主题"),
     ("/search", "检索知识"),
+    ("/goal", "学习目标列表"),
+    ("/goal create", "创建学习目标"),
+    ("/goal show", "查看学习目标"),
+    ("/goal list", "列出学习目标"),
+    ("/goal set", "修改目标与可用时间"),
+    ("/plan show", "查看学习路线"),
+    ("/plan generate", "生成或调整学习路线"),
+    ("/plan add", "添加学习单元"),
+    ("/plan move", "调整单元顺序"),
+    ("/plan remove", "从当前路线移除单元"),
+    ("/plan done", "记录单元完成"),
+    ("/plan reopen", "重新打开学习单元"),
+    ("/progress", "查看学习进度与下一步"),
+    ("/study", "开始导师式学习"),
+    ("/answer", "提交答案并获得评估"),
+    ("/review", "保存学习复盘"),
+    ("/web", "搜索网页资料"),
+    ("/research", "检索研究资料"),
+    ("/fetch", "阅读网页或 PDF"),
+    ("/import", "保存带来源的资料快照"),
+    ("/services", "查看外部服务配置"),
+    ("/services reload", "重新接入检索服务"),
+    ("/summary", "生成知识摘要"),
     ("/new", "新建会话"),
     ("/sessions", "查找并选择历史会话"),
     ("/session", "当前会话详情"),
@@ -75,6 +98,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/session archive", "归档会话"),
     ("/session unarchive", "取消归档"),
     ("/session close", "关闭当前会话"),
+    ("/session history", "查看会话历史"),
+    ("/session inspect", "只读查看会话"),
     ("/session import", "导入旧 JSONL 文件"),
     ("/session preview", "只读浏览旧 JSONL"),
     ("/clear", "清空对话显示"),
@@ -88,11 +113,20 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/resume", "恢复工作区会话"),
     ("/commit", "提交工作区"),
     ("/sync", "同步"),
+    ("/sync pull", "拉取并合并远程修改"),
+    ("/sync push", "推送本地提交"),
+    ("/sync fetch", "获取远程状态"),
+    ("/sync remote", "查看或设置远程仓库"),
+    ("/sync conflicts", "查看同步冲突"),
+    ("/sync resolve", "解决同步冲突"),
+    ("/sync continue", "继续合并"),
+    ("/sync abort", "取消合并"),
     ("/history", "版本历史"),
     ("/diff", "查看修改"),
     ("/restore", "恢复版本"),
     ("/index status", "索引状态"),
     ("/index refresh", "刷新索引"),
+    ("/index rebuild", "重建索引"),
     ("/validate", "校验知识"),
     ("/stop", "停止当前任务"),
     ("/help", "帮助"),
@@ -132,7 +166,6 @@ pub struct Ui {
     pub workspace_name: String,
     pub workspace_path: Option<std::path::PathBuf>,
     pub model: String,
-    pub demo: bool,
     pub busy: bool,
     pub loading: bool,
     pub activity: String,
@@ -283,8 +316,6 @@ impl Ui {
             workspace_name: "未打开工作区".into(),
             workspace_path: None,
             model,
-            demo: std::env::var("LUMEN_MODEL_ENDPOINT").is_err()
-                || std::env::var("LUMEN_MODEL_KEY").is_err(),
             busy: false,
             loading: false,
             activity: String::new(),
@@ -498,7 +529,7 @@ impl Ui {
         }
         let prefix = &self.editor.text[..self.editor.cursor];
         if prefix.starts_with('/') && !prefix.contains('\n') {
-            return COMMANDS
+            let mut choices: Vec<_> = COMMANDS
                 .iter()
                 .filter(|(c, _)| c.starts_with(prefix))
                 .map(|(c, h)| Candidate {
@@ -507,6 +538,10 @@ impl Ui {
                     value: Completion::Command((*c).into()),
                 })
                 .collect();
+            // A fully typed command keeps its normal Enter-to-execute behavior,
+            // even when it is also a prefix of another command (/session[s]).
+            choices.sort_by_key(|c| c.label != prefix);
+            return choices;
         }
         vec![]
     }
@@ -516,7 +551,38 @@ impl Ui {
         self.completions_hidden = true;
         match &choice.value {
             Completion::Command(c) => {
-                self.editor.set(format!("{c} "));
+                // Replace the command head while preserving any existing arguments.
+                let word_end = self.editor.text[self.editor.cursor..]
+                    .find(char::is_whitespace)
+                    .map(|n| self.editor.cursor + n)
+                    .unwrap_or(self.editor.text.len());
+                let known_end = COMMANDS
+                    .iter()
+                    .filter_map(|(command, _)| {
+                        self.editor
+                            .text
+                            .strip_prefix(command)
+                            .filter(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+                            .map(|_| command.len())
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let end = word_end.max(known_end);
+                let suffix = &self.editor.text[end..];
+                let separator_len = suffix
+                    .chars()
+                    .next()
+                    .filter(|ch| ch.is_whitespace())
+                    .map(char::len_utf8)
+                    .unwrap_or(1);
+                let replacement = if suffix.starts_with(char::is_whitespace) {
+                    c.clone()
+                } else {
+                    format!("{c} ")
+                };
+                self.editor.text.replace_range(..end, &replacement);
+                self.editor.cursor = c.len() + separator_len;
+                self.candidate = 0;
                 None
             }
             Completion::Object(id) => {
@@ -751,17 +817,28 @@ impl Ui {
             return None;
         }
         if self.focus == Focus::Input {
-            let choices = self.candidates().len();
+            let candidates = self.candidates();
+            let choices = candidates.len();
+            let selected = self.candidate.min(choices.saturating_sub(1));
             match key.code {
+                KeyCode::Esc if choices > 0 => self.completions_hidden = true,
                 KeyCode::Esc => {
                     self.focus = Focus::Content;
                     self.completions_hidden = true;
                 }
                 KeyCode::Tab if choices > 0 => return self.complete(),
                 KeyCode::Tab => self.cycle(),
-                KeyCode::Up if choices > 0 => self.candidate = self.candidate.saturating_sub(1),
-                KeyCode::Down if choices > 0 => {
-                    self.candidate = (self.candidate + 1).min(choices - 1)
+                KeyCode::Up if choices > 0 => self.candidate = selected.saturating_sub(1),
+                KeyCode::Down if choices > 0 => self.candidate = (selected + 1).min(choices - 1),
+                KeyCode::Enter
+                    if candidates
+                        .get(selected)
+                        .is_some_and(|choice| match &choice.value {
+                            Completion::Command(command) => self.editor.text.trim() != command,
+                            Completion::Object(_) => true,
+                        }) =>
+                {
+                    return self.complete()
                 }
                 KeyCode::Enter => return Some(Action::Submit(self.editor.text.clone())),
                 KeyCode::Char('j') if ctrl => {

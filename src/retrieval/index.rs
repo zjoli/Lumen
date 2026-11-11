@@ -446,7 +446,7 @@ impl IndexService {
             let batch=self.0.call(cancel.clone(), move |s,_| {
                 s.ensure_writable()?;
                 let db=connect(&s.root)?;
-                let mut statement=db.prepare("SELECT c.id,c.revision,c.text FROM chunks c WHERE NOT EXISTS(SELECT 1 FROM embeddings e WHERE e.chunk_id=c.id AND e.revision=c.revision AND e.model=?1) LIMIT 32")?;
+                let mut statement=db.prepare("SELECT c.id,c.revision,CASE WHEN trim(c.text)='' THEN d.title ELSE c.text END FROM chunks c JOIN documents d ON d.id=c.document_id WHERE NOT EXISTS(SELECT 1 FROM embeddings e WHERE e.chunk_id=c.id AND e.revision=c.revision AND e.model=?1) LIMIT 32")?;
                 let rows=statement.query_map([model], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?;
                 Ok(rows.collect::<Result<Vec<_>,_>>()?)
             }).await?;

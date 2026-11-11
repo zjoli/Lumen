@@ -33,23 +33,36 @@ cd Lumen
 cargo run
 ```
 
-构建发布版本：
+### 构建二进制文件
+
+在项目根目录执行，构建 release 版本：
 
 ```bash
-cargo build --release
+cargo build --release --bin lumen-tui --locked
 ```
+
+生成的二进制文件位于 `target/release/lumen-tui`（Windows 为 `target/release/lumen-tui.exe`），可以直接运行或复制到测试目录执行。例如在 Linux/macOS 上：
+
+```bash
+mkdir -p /tmp/lumen-test
+cp target/release/lumen-tui /tmp/lumen-test/
+cd /tmp/lumen-test
+LUMEN_SESSION_DIR="$PWD/sessions" ./lumen-tui
+```
+
+此命令将测试会话保存在测试目录的 `sessions/` 中。首次使用时，可在程序内执行 `/workspace init /tmp/lumen-test/knowledge` 创建知识工作区；已有工作区使用 `/workspace open /tmp/lumen-test/knowledge` 打开。
 
 ## 计划中的工作
 
 - [x] 搭建基础终端交互与命令解析
-- [ ] 创建与编辑学习目标
-- [ ] 生成、查看和调整学习路线
-- [ ] 接入导师对话能力
+- [x] 创建与编辑学习目标
+- [x] 生成、查看和调整学习路线
+- [x] 导师对话、答案评估、学习进度与复盘
 - [x] Markdown 知识对象、学习记录与会话持久化
 - [x] 本地全文检索、关系导航及可注入的向量、摘要和重排能力
 - [x] 内嵌 libgit2 的版本管理、多设备同步与冲突恢复
-- [ ] 支持资料检索与研究主题探索
-- [ ] 支持可替换的模型和搜索服务提供商
+- [x] 联网搜索、研究资料检索、网页/PDF 阅读与来源快照入库
+- [x] 可替换的模型、搜索、Embedding、重排与知识摘要服务
 - [x] 知识目录、内容视图与 Agent 输入面板的全屏 TUI
 - [ ] 完善跨平台发布与配置管理
 
@@ -63,6 +76,22 @@ Lumen 将学习过程视为一个持续循环：
 
 应用层计划按领域拆分为路线规划、学习会话、研究探索和本地存储等模块；模型调用、联网检索和数据存储会保持可替换，方便接入不同服务并优先保护用户的学习记录。
 
+## 学习目标与路线
+
+打开知识工作区后，可以离线创建目标和路线：
+
+```text
+/goal create "学习数据库事务" "能解释隔离级别与并发异常"
+/goal set "学习数据库事务" baseline "了解基本 SQL"
+/goal set "学习数据库事务" weekly_minutes 180
+/plan add "学习数据库事务" 30 "事务基础" "解释 ACID 并完成练习"
+/progress "学习数据库事务"
+```
+
+配置真实模型后，`/plan generate <目标>` 生成或结合近期复盘调整路线，`/study <unit-id>` 开始导师学习，`/answer <unit-id> <答案>` 保存评估反馈；`/plan done`、`/plan reopen` 和 `/review` 管理完成与复习。目标、路线、知识和学习记录共用已有 Markdown 工作区，支持持久化及同步。完整流程见 [学习使用说明](docs/study.md)。
+
+联网搜索、研究资料检索、网页/PDF 阅读、快照入库，以及向量检索、重排和知识摘要使用本机 `.lumen/services.yaml`，可按需启用。`/web`、`/research`、`/fetch`、`/import` 提供直接命令，Agent 也能调用对应工具。配置模板见 [services.yaml](examples/services.yaml)，接入和数据发送范围见 [外部服务说明](docs/services.md)。
+
 ## 知识工作区
 
 ### TUI 界面
@@ -74,7 +103,7 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 左侧为知识目录，右上在 Markdown 与会话记录之间切换，右下固定保留多行 Agent 输入。面板共用细线边界，内部标题栏与正文对齐，蓝紫强调色区分导航和 Agent。默认继承终端配色，适配 VS Code 的浅色或深色集成终端；`cargo run --bin lumen-tui -- --theme light` 可查看与设计图一致的浅色配色。
 
-所有文字沿用终端字号；标题通过粗体和颜色区分。输入区默认获得焦点，使用可见的原生插入光标，支持中文、组合字符、左右移动、换行、粘贴和长草稿滚动。VS Code 可按习惯将 `terminal.integrated.fontSize` 设置为 12–14，例如 13；程序不改动字体设置。
+所有文字沿用终端字号；标题通过粗体和颜色区分。输入区默认获得焦点，使用不闪烁的原生方块光标，支持中文、组合字符、左右移动、换行、粘贴和长草稿滚动。VS Code 可按习惯将 `terminal.integrated.fontSize` 设置为 12–14，例如 13；程序不改动字体设置。
 
 | 操作 | 功能 |
 | --- | --- |
@@ -86,6 +115,7 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 | PgUp / PgDn / Home / End | 翻页 / 顶部 / 底部；对话到达底部恢复追尾 |
 | / | 输入时命令候选；目录或正文中查找 |
 | @ / Tab | 输入时知识引用候选 / 确认候选 |
+| ↑↓ / Enter | 候选列表中选择 / 确认填入命令或引用；再次 Enter 执行补全后的命令 |
 | a / v | 阅读时引用当前章节 / 开始行选区；用 ↑↓ 扩展后按 a 引用 |
 | Tab / Enter | 内容区中选择链接 / 打开来源 |
 | Ctrl+R / Ctrl+B | 移除引用 / 显示或收起目录 |

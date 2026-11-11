@@ -199,7 +199,7 @@ pub fn draw(frame: &mut Frame, ui: &mut Ui) {
     if area.width >= 72 {
         let status = if ui.busy {
             "生成中"
-        } else if ui.demo {
+        } else if ui.model == "mock" {
             "演示模式"
         } else {
             "就绪"
@@ -785,7 +785,7 @@ fn completions(frame: &mut Frame, ui: &Ui, content: Rect) {
         height,
     );
     frame.render_widget(Clear, area);
-    let block = panel(ui.theme, "↑↓ 选择 · Tab 确认".into(), true);
+    let block = panel(ui.theme, "↑↓ 选择 · Enter/Tab 确认".into(), true);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let selected = ui.candidate.min(choices.len() - 1);
@@ -797,7 +797,15 @@ fn completions(frame: &mut Frame, ui: &Ui, content: Rect) {
         .take(inner.height as usize)
         .map(|(i, c)| {
             Line::from(span(
-                text::truncate(&format!("{}  {}", c.label, c.hint), inner.width as usize),
+                text::truncate(
+                    &format!(
+                        "{} {}  {}",
+                        if i == selected { "›" } else { " " },
+                        c.label,
+                        c.hint
+                    ),
+                    inner.width as usize,
+                ),
                 if i == selected {
                     ui.theme.selected()
                 } else {

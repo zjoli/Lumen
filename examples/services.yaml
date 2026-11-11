@@ -1,0 +1,37 @@
+# 复制到知识工作区或独立会话目录的 .lumen/services.yaml。
+# 按需取消注释；endpoint 是完整接口 URL，密钥通过环境变量读取。
+schema_version: 1
+
+# search:
+#   protocol: searxng
+#   connection:
+#     endpoint: http://127.0.0.1:8080/search
+#     timeout_ms: 25000
+#
+# # Jina 搜索可替换上面的 search 段。
+# search:
+#   protocol: jina
+#   connection:
+#     endpoint: https://s.jina.ai/search
+#     auth: { kind: env, variable: LUMEN_SEARCH_KEY }
+#
+# reader:
+#   endpoint: https://r.jina.ai/
+#   auth: { kind: env, variable: LUMEN_READER_KEY }
+#
+# embedding:
+#   connection:
+#     endpoint: https://embedding.example/v1/embeddings
+#     auth: { kind: env, variable: LUMEN_EMBEDDING_KEY }
+#   model: actual-embedding-model
+#   # dimensions: 1024
+#   state_scope: my-account
+#
+# reranker:
+#   connection:
+#     endpoint: https://rerank.example/v1/rerank
+#     auth: { kind: env, variable: LUMEN_RERANK_KEY }
+#   model: actual-rerank-model
+#
+# summary:
+#   model: research
