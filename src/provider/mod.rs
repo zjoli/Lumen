@@ -1,8 +1,10 @@
 mod capabilities;
+mod catalog;
 mod config;
 mod credentials;
 mod error;
 mod legacy;
+mod management;
 mod mock;
 mod protocols;
 mod registry;
@@ -12,8 +14,10 @@ mod transport;
 mod usage;
 
 pub use capabilities::*;
+pub use catalog::*;
 pub use config::*;
 pub use error::*;
+pub use management::*;
 pub use mock::*;
 pub use registry::*;
 pub use replay::*;

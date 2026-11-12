@@ -13,6 +13,11 @@ const ERROR_LIMIT: usize = 64 * 1024;
 #[async_trait]
 pub trait HttpTransport: Send + Sync {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, ProviderError>;
+    async fn get(&self, _request: HttpRequest) -> Result<HttpResponse, ProviderError> {
+        Err(ProviderError::unsupported(
+            "HTTP transport does not support model discovery GET",
+        ))
+    }
 }
 pub struct HttpRequest {
     pub url: String,
@@ -40,15 +45,19 @@ impl ReqwestTransport {
     pub fn new(client: reqwest::Client) -> Self {
         Self { client }
     }
-}
-#[async_trait]
-impl HttpTransport for ReqwestTransport {
-    async fn send(&self, r: HttpRequest) -> Result<HttpResponse, ProviderError> {
-        let mut request = self.client.post(&r.url);
+    async fn execute(
+        &self,
+        r: HttpRequest,
+        method: reqwest::Method,
+    ) -> Result<HttpResponse, ProviderError> {
+        let mut request = self.client.request(method.clone(), &r.url);
         for (k, v) in r.headers {
             request = request.header(k, v);
         }
-        let mut response = request.body(r.body.to_vec()).send().await.map_err(|e| {
+        if method != reqwest::Method::GET {
+            request = request.body(r.body.to_vec());
+        }
+        let mut response = request.send().await.map_err(|e| {
             let mut err = ProviderError::new(
                 if e.is_timeout() {
                     ProviderErrorKind::Timeout
@@ -82,6 +91,15 @@ impl HttpTransport for ReqwestTransport {
             headers,
             body,
         })
+    }
+}
+#[async_trait]
+impl HttpTransport for ReqwestTransport {
+    async fn send(&self, r: HttpRequest) -> Result<HttpResponse, ProviderError> {
+        self.execute(r, reqwest::Method::POST).await
+    }
+    async fn get(&self, r: HttpRequest) -> Result<HttpResponse, ProviderError> {
+        self.execute(r, reqwest::Method::GET).await
     }
 }
 

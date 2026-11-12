@@ -1,6 +1,7 @@
 //! Terminal-native knowledge browser, reader and Agent composer.
 mod input;
 mod markdown;
+mod provider_setup;
 mod render;
 mod service;
 mod state;
@@ -412,6 +413,22 @@ impl Runtime {
     }
     fn action(&mut self, action: Action) {
         match action {
+            Action::Provider(request) => {
+                let Some(mut app) = self.app.take() else {
+                    self.ui.notify("请等待当前操作结束。", true);
+                    return;
+                };
+                app.local_ui = self.ui.session_ui();
+                self.ui.busy = true;
+                self.ui.last_submission = None;
+                self.ui.activity = "正在配置供应商与查询模型…".into();
+                self.cancel = CancellationToken::new();
+                let cancel = self.cancel.clone();
+                self.operation = Some(tokio::spawn(async move {
+                    let result = app.configure_provider(*request, cancel).await;
+                    (app, result)
+                }));
+            }
             Action::Submit(value) => self.submit(value),
             Action::Command(command) => self.submit_parsed("会话操作".into(), Some(command)),
             Action::Reload => self.reload(),
@@ -465,6 +482,54 @@ impl Runtime {
             return;
         }
         match &command {
+            Some(Command::Provider(crate::commands::ProviderCommand::Add {
+                name: Some(name),
+                base_url,
+            })) => {
+                if self.operation.is_some() {
+                    self.ui.notify("请等待当前任务结束后配置供应商。", false);
+                    return;
+                }
+                self.ui.editor.take();
+                self.ui.completions_hidden = true;
+                self.ui.session_panel = false;
+                let entry = if base_url.is_none() {
+                    match self
+                        .app
+                        .as_mut()
+                        .map(|app| app.registry().provider_catalog())
+                        .transpose()
+                    {
+                        Ok(entries) => entries.and_then(|entries| {
+                            entries.into_iter().find(|entry| entry.id == *name)
+                        }),
+                        Err(error) => {
+                            self.ui.notify(error.to_string(), true);
+                            return;
+                        }
+                    }
+                } else {
+                    None
+                };
+                self.ui.provider_dialog = Some(if let Some(entry) = entry {
+                    provider_setup::ProviderDialog::login(&entry)
+                } else {
+                    provider_setup::ProviderDialog::add(Some(name.clone()), base_url.clone())
+                });
+                return;
+            }
+            Some(Command::Provider(crate::commands::ProviderCommand::Key(provider))) => {
+                if self.operation.is_some() {
+                    self.ui.notify("请等待当前任务结束后修改 API Key。", false);
+                    return;
+                }
+                self.ui.editor.take();
+                self.ui.completions_hidden = true;
+                self.ui.session_panel = false;
+                self.ui.provider_dialog =
+                    Some(provider_setup::ProviderDialog::key(provider.clone()));
+                return;
+            }
             Some(Command::Invalid(e)) => {
                 self.ui.notify(e.clone(), true);
                 return;
@@ -648,6 +713,39 @@ impl Runtime {
                         self.ui.session_panel = true;
                     }
                     CommandOutcome::History(page) => self.ui.prepend_history(page),
+                    CommandOutcome::ProviderMenu(entries, name, logout) => {
+                        self.ui.session_panel = false;
+                        self.ui.completions_hidden = true;
+                        self.ui.provider_dialog = Some(if let Some(name) = name {
+                            provider_setup::ProviderDialog::login(
+                                entries
+                                    .iter()
+                                    .find(|p| p.id == name)
+                                    .expect("validated provider"),
+                            )
+                        } else {
+                            provider_setup::ProviderDialog::providers(entries, logout)
+                        });
+                    }
+                    CommandOutcome::AvailableModels(models, providers) => {
+                        if models.is_empty() && providers.is_empty() {
+                            self.ui.message("系统", "暂无可用模型。先 /login 配置认证，再 /models <供应商> 刷新模型列表。");
+                        } else {
+                            self.ui.provider_dialog =
+                                Some(provider_setup::ProviderDialog::available(models, providers));
+                        }
+                    }
+                    CommandOutcome::ProviderModels(catalog) => {
+                        self.ui.session_panel = false;
+                        self.ui.completions_hidden = true;
+                        let registered = self
+                            .app
+                            .as_mut()
+                            .and_then(|app| app.registry().available_models().ok())
+                            .unwrap_or_default();
+                        self.ui.provider_dialog =
+                            Some(provider_setup::ProviderDialog::models(*catalog, registered));
+                    }
                     CommandOutcome::Text(output) => {
                         if !output.is_empty() {
                             self.ui.message("系统", output);
@@ -697,7 +795,7 @@ impl Runtime {
                             if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && key.code==crossterm::event::KeyCode::Char('r') { self.reference_request+=1; }
                             if let Some(action)=self.ui.key(key) { self.action(action); }
                         }
-                        Some(Ok(Event::Paste(value))) if self.ui.focus==Focus::Input && !self.quitting=>{ self.ui.editor.insert(&value); self.ui.completions_hidden=true; }
+                        Some(Ok(Event::Paste(value))) if !self.quitting=>{ if let Some(dialog)=&mut self.ui.provider_dialog {dialog.paste(&value);} else if self.ui.focus==Focus::Input {self.ui.editor.insert(&value); self.ui.completions_hidden=true;} }
                         Some(Ok(_))=>(),Some(Err(e))=>return Err(e.into()),None=>self.action(Action::Quit),
                     }
                     dirty=true;

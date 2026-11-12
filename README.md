@@ -142,7 +142,7 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 作者可通过 `LUMEN_AUTHOR_NAME`、`LUMEN_AUTHOR_EMAIL` 设置，或通过 `/workspace config author_name "Your Name"` 和 `author_email` 修改。`/workspace config credential_ref <name>` 引用系统密钥存储中服务名 `lumen` 对应的凭据；HTTPS 使用令牌，SSH 可配置 `ssh_private_key`，主机必须已在 `~/.ssh/known_hosts` 中受信任。
 
-模型对话通过本机 `.lumen/providers.yaml` 统一配置连接、协议、模型别名和能力，支持 OpenAI Chat Completions、Responses 与 Anthropic Messages 的 SSE 流式调用。`/models`、`/providers` 查看配置，`/model <alias>` 选择模型。完整示例和旧配置兼容规则见 [供应商配置](docs/providers.md)。向量、重排、摘要通过 Rust provider trait 注入；无 provider 时检索降级为全文，概览使用确定性导航。后台索引任务随工作区关闭而取消并等待退出。
+模型对话通过本机 `.lumen/providers.yaml` 统一配置连接、协议、模型别名和能力，支持 OpenAI Chat Completions、Responses 与 Anthropic Messages 的 SSE 流式调用。`/login` 搜索供应商并配置认证，目录包含 OpenAI、Anthropic、DeepSeek、OpenRouter、Groq、Mistral、xAI、Ollama，也支持自定义地址和协议。API Key 隐藏输入并保存到本机凭据文件；保存认证后通过 `/model` 列表选择已有模型或选择供应商查询模型，远端列表缓存支持离线读取，缺少容量时需按实际规格填写。`/models <供应商>` 刷新列表，`/logout` 移除本机 Key，`/models`、`/providers` 查看本机配置。完整示例、凭据保存方式和旧配置兼容规则见 [供应商配置](docs/providers.md)。向量、重排、摘要可通过 [外部服务配置](docs/services.md) 接入或通过 Rust trait 注入；无 provider 时检索降级为全文，概览使用确定性导航。后台索引任务随工作区关闭而取消并等待退出。
 
 上下文由统一插件管理，检索与 Skill 按需追加，达到水位时生成结构化摘要并提交可恢复检查点。`/context` 查看窗口分区与预留，`/compact` 安排下一请求前压缩，`/skills` 查看本地 Skill。
 

@@ -15,6 +15,9 @@ pub enum Command {
     Model(Option<String>),
     Models,
     Providers,
+    Login(Option<String>),
+    Logout(Option<String>),
+    Provider(ProviderCommand),
     Status,
     Context,
     Compact,
@@ -72,6 +75,27 @@ pub enum Command {
     Index(IndexCommand),
     Validate,
     Invalid(String),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProviderCommand {
+    Add {
+        name: Option<String>,
+        base_url: Option<String>,
+    },
+    Key(String),
+    Auth {
+        name: String,
+        variable: Option<String>,
+    },
+    Models(String),
+    Model {
+        provider: String,
+        model_id: String,
+        alias: String,
+        context_tokens: usize,
+        output_tokens: usize,
+        tools: bool,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GoalCommand {
@@ -226,8 +250,53 @@ pub fn parse(input: &str) -> Option<Command> {
         }),
         "/clear" => Command::Clear,
         "/model" => Command::Model(rest()),
+        "/login" if args.len() <= 1 => Command::Login(args.first().cloned()),
+        "/logout" if args.len() <= 1 => Command::Logout(args.first().cloned()),
+        "/login" | "/logout" => invalid(),
         "/models" if args.is_empty() => Command::Models,
         "/providers" if args.is_empty() => Command::Providers,
+        "/models" if args.len() == 1 => Command::Provider(ProviderCommand::Models(args[0].clone())),
+        "/provider" => match args.first().map(String::as_str) {
+            Some("add") if args.len() <= 3 => Command::Provider(ProviderCommand::Add {
+                name: args.get(1).cloned(),
+                base_url: args.get(2).cloned(),
+            }),
+            Some("key") if args.len() == 2 => {
+                Command::Provider(ProviderCommand::Key(args[1].clone()))
+            }
+            Some("models") if args.len() == 2 => {
+                Command::Provider(ProviderCommand::Models(args[1].clone()))
+            }
+            Some("auth") if args.len() == 4 && args[2] == "env" => {
+                Command::Provider(ProviderCommand::Auth {
+                    name: args[1].clone(),
+                    variable: Some(args[3].clone()),
+                })
+            }
+            Some("auth") if args.len() == 3 && args[2] == "none" => {
+                Command::Provider(ProviderCommand::Auth {
+                    name: args[1].clone(),
+                    variable: None,
+                })
+            }
+            Some("model") if args.len() == 6 || args.len() == 7 && args[6] == "--no-tools" => {
+                Command::Provider(ProviderCommand::Model {
+                    provider: args[1].clone(),
+                    model_id: args[2].clone(),
+                    alias: args[3].clone(),
+                    context_tokens: match args[4].parse() {
+                        Ok(n) => n,
+                        Err(_) => return Some(invalid()),
+                    },
+                    output_tokens: match args[5].parse() {
+                        Ok(n) => n,
+                        Err(_) => return Some(invalid()),
+                    },
+                    tools: args.len() == 6,
+                })
+            }
+            _ => invalid(),
+        },
         "/status" => Command::Status,
         "/context" if args.is_empty() => Command::Context,
         "/compact" if args.is_empty() => Command::Compact,
@@ -423,6 +492,7 @@ pub fn parse(input: &str) -> Option<Command> {
 pub fn help() -> &'static str {
     concat!("/help | /quit | /new | /clear | /model [alias|id] | /models | /providers | /status | /stop\n/context | /compact | /skills | /resume <session-id>\n/sessions [query] | /sessions --cursor <cursor> [query] | /session\n/session rename <title> | archive [id] | unarchive <id> | close | history [before]\n/session inspect <id> | preview <legacy.jsonl> | import <legacy.jsonl>\n/chat | /read [title|id] | /open <title|id> | /knowledge | /theme [auto|light|dark]\n/workspace init <path> | open <path> | clone <url> <path> | config [key value]\n/search <query> | /commit <message> | /sync [message]\n/sync pull | push | fetch | remote [url|none] | conflicts | resolve <path> <file|delete> | continue | abort\n/history [id] | /diff [id] | /restore <id> <commit>\n/index status | refresh | rebuild <all|lexical|relations|learning_state|vectors|summaries>\n/validate\n",
     "/search [--lexical|--hybrid|--semantic] [--rerank] <query>\n/goal [list] | /goal create <title> [description] | /goal show <title|id>\n/goal set <goal> <title|description|baseline|weekly_minutes|status> <value>\n/plan show <goal> | /plan generate <goal> | /plan add <goal> <minutes> <title> [body]\n/plan move <goal> <unit-id> <position> | /plan remove <goal> <unit-id>\n/plan done <unit-id> [note] | /plan reopen <unit-id> [note]\n/progress <goal> | /study <unit-id> | /answer <unit-id> <answer> | /review <goal> <note>\n/web <query> | /research <query> | /fetch <url> | /import <url> [title]\n/services [reload] | /summary <id> [abstract|overview]\n",
+    "/login [供应商ID] | /logout [供应商ID]\n/provider add [<名称> [Base URL]] | /provider key <名称>\n/provider models <名称> | /models <名称>\n/provider auth <名称> env <变量名> | /provider auth <名称> none\n/provider model <供应商> <模型ID> <别名> <上下文> <输出上限> [--no-tools]\n",
     "TUI: F6 切换区域 · F1 目录 · F2 阅读 · F3 对话 · i 输入 · Esc 浏览\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 停止 · Ctrl+Q 退出 · Ctrl+B 目录开关\n阅读: / 查找 · a 引用章节 · v 选区/↑↓ 扩展/a 引用 · Tab 选择链接/Enter 打开\n输入: / 命令 · @ 引用 · ↑↓ 选择/Enter 或 Tab 确认候选 · Ctrl+R 移除引用")
 }
 #[cfg(test)]
@@ -495,5 +565,54 @@ mod tests {
                 level: 1
             })
         );
+        assert_eq!(
+            parse("/provider add deepseek"),
+            Some(Command::Provider(ProviderCommand::Add {
+                name: Some("deepseek".into()),
+                base_url: None
+            }))
+        );
+        assert!(matches!(
+            parse("/provider add company https://gateway.test/v1"),
+            Some(Command::Provider(ProviderCommand::Add {
+                base_url: Some(_),
+                ..
+            }))
+        ));
+        assert_eq!(parse("/login"), Some(Command::Login(None)));
+        assert_eq!(
+            parse("/login openai"),
+            Some(Command::Login(Some("openai".into())))
+        );
+        assert_eq!(parse("/logout"), Some(Command::Logout(None)));
+        assert_eq!(
+            parse("/logout company"),
+            Some(Command::Logout(Some("company".into())))
+        );
+        assert!(matches!(
+            parse("/login openai raw-key"),
+            Some(Command::Invalid(_))
+        ));
+        assert_eq!(
+            parse("/models deepseek"),
+            Some(Command::Provider(ProviderCommand::Models(
+                "deepseek".into()
+            )))
+        );
+        assert_eq!(
+            parse("/provider key deepseek"),
+            Some(Command::Provider(ProviderCommand::Key("deepseek".into())))
+        );
+        assert!(matches!(
+            parse("/provider key deepseek raw-key-is-not-a-command-argument"),
+            Some(Command::Invalid(_))
+        ));
+        assert!(matches!(
+            parse("/provider model company chat alias 64000 4096 --no-tools"),
+            Some(Command::Provider(ProviderCommand::Model {
+                tools: false,
+                ..
+            }))
+        ));
     }
 }

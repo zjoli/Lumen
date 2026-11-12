@@ -39,6 +39,7 @@ pub struct Message {
     pub body: String,
 }
 pub enum Action {
+    Provider(Box<super::provider_setup::ProviderAction>),
     Command(crate::commands::Command),
     Submit(String),
     Open(ObjectId, Vec<ObjectId>),
@@ -58,6 +59,8 @@ pub struct Candidate {
     pub value: Completion,
 }
 pub const COMMANDS: &[(&str, &str)] = &[
+    ("/login", "搜索供应商并配置认证"),
+    ("/logout", "移除供应商的本机凭据"),
     ("/chat", "显示会话"),
     ("/read", "返回文档"),
     ("/open", "打开知识标题或 ID"),
@@ -103,9 +106,14 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/session import", "导入旧 JSONL 文件"),
     ("/session preview", "只读浏览旧 JSONL"),
     ("/clear", "清空对话显示"),
-    ("/model", "查看或切换模型"),
+    ("/model", "搜索并选择可用模型"),
     ("/models", "列出模型别名与能力"),
     ("/providers", "列出供应商连接"),
+    ("/provider add", "供应商目录与自定义连接"),
+    ("/provider key", "录入或修改 API Key"),
+    ("/provider models", "查询远端可用模型"),
+    ("/provider auth", "设置环境变量认证或无认证"),
+    ("/provider model", "手工添加模型规格"),
     ("/status", "查看工作区状态"),
     ("/context", "查看上下文窗口与活跃 Skill"),
     ("/compact", "安排上下文压缩"),
@@ -133,6 +141,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/quit", "退出"),
 ];
 pub struct Ui {
+    pub(super) provider_dialog: Option<super::provider_setup::ProviderDialog>,
     pub session_identity: Option<crate::session::SessionIdentity>,
     pub session_activation: u64,
     pub session_title: String,
@@ -283,6 +292,7 @@ impl Ui {
     }
     pub fn new(model: String, theme: Theme) -> Self {
         Self {
+            provider_dialog: None,
             session_identity: None,
             session_activation: 0,
             session_title: String::new(),
@@ -650,6 +660,28 @@ impl Ui {
         }
     }
     pub fn key(&mut self, key: KeyEvent) -> Option<Action> {
+        if let Some(dialog) = &mut self.provider_dialog {
+            use super::provider_setup::DialogEvent;
+            return match dialog.key_event(key) {
+                DialogEvent::None => None,
+                DialogEvent::Close => {
+                    self.provider_dialog = None;
+                    None
+                }
+                DialogEvent::Quit => {
+                    self.provider_dialog = None;
+                    Some(Action::Quit)
+                }
+                DialogEvent::Open(dialog) => {
+                    self.provider_dialog = Some(*dialog);
+                    None
+                }
+                DialogEvent::Save(action) => {
+                    self.provider_dialog = None;
+                    Some(Action::Provider(action))
+                }
+            };
+        }
         if self.session_panel {
             let filtered: Vec<_> = self
                 .session_choices

@@ -930,3 +930,371 @@ fn model_status_tracks_the_selected_model_instead_of_legacy_environment_variable
     terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
     assert!(screen(&terminal).contains("演示模式"));
 }
+
+#[test]
+fn provider_api_key_is_masked_and_never_enters_chat_or_session_drafts() {
+    let secret = "test-only-sensitive-provider-key";
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.editor.set("保留原来的草稿".into());
+    ui.provider_dialog = Some(provider_setup::ProviderDialog::add(
+        Some("openrouter".into()),
+        None,
+    ));
+    ui.provider_dialog.as_mut().unwrap().paste(secret);
+    let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+    assert!(screen(&terminal).contains("*****"));
+    assert!(!screen(&terminal).contains(secret));
+    assert!(!serde_json::to_string(&ui.session_ui())
+        .unwrap()
+        .contains(secret));
+    assert_eq!(ui.editor.text, "保留原来的草稿");
+    assert!(ui.messages.is_empty());
+    let action = ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+    assert!(
+        matches!(action,Action::Provider(action) if matches!(*action,provider_setup::ProviderAction::Add {key:Some(ref key),..} if key==secret))
+    );
+    assert!(ui.provider_dialog.is_none());
+    assert_eq!(ui.editor.text, "保留原来的草稿");
+    ui.provider_dialog = Some(provider_setup::ProviderDialog::key("deepseek".into()));
+    ui.provider_dialog.as_mut().unwrap().paste(secret);
+    assert!(ui
+        .key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .is_none());
+    assert!(ui.provider_dialog.is_none());
+    assert!(!serde_json::to_string(&ui.session_ui())
+        .unwrap()
+        .contains(secret));
+}
+
+#[test]
+fn discovered_models_can_be_filtered_selected_and_configured_without_guessed_limits() {
+    let catalog = crate::provider::ProviderModelCatalog {
+        provider: "custom".into(),
+        connection_key: "revision".into(),
+        models: vec![
+            crate::provider::DiscoveredModel {
+                id: "first".into(),
+                name: None,
+                context_tokens: None,
+                max_output_tokens: None,
+            },
+            crate::provider::DiscoveredModel {
+                id: "second".into(),
+                name: None,
+                context_tokens: None,
+                max_output_tokens: None,
+            },
+        ],
+    };
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.provider_dialog = Some(provider_setup::ProviderDialog::models(catalog, vec![]));
+    ui.provider_dialog.as_mut().unwrap().paste("second");
+    assert!(ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .is_none());
+    assert!(ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+        .is_none());
+    let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+    terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+    assert!(screen(&terminal).contains("请填写模型的上下文容量"));
+    ui.provider_dialog.as_mut().unwrap().paste("64000");
+    ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    ui.provider_dialog.as_mut().unwrap().paste("4096");
+    let action = ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+        .unwrap();
+    assert!(
+        matches!(action,Action::Provider(action) if matches!(*action,provider_setup::ProviderAction::Model(ref request) if request.model_id=="second" && request.context_tokens==64000 && request.output_tokens==4096))
+    );
+}
+
+struct DiscoveryHttp;
+#[async_trait::async_trait]
+impl crate::provider::HttpTransport for DiscoveryHttp {
+    async fn send(
+        &self,
+        _: crate::provider::HttpRequest,
+    ) -> Result<crate::provider::HttpResponse, ProviderError> {
+        Err(ProviderError::protocol("discovery must not send chat"))
+    }
+    async fn get(
+        &self,
+        request: crate::provider::HttpRequest,
+    ) -> Result<crate::provider::HttpResponse, ProviderError> {
+        assert!(request.url.ends_with("/v1/models"));
+        assert!(request
+            .headers
+            .iter()
+            .any(|(k, v)| k == "authorization" && v == "Bearer test-ui-key"));
+        Ok(crate::provider::HttpResponse {status:200,headers:std::collections::BTreeMap::from([("content-type".into(),"application/json".into())]),body:Box::pin(futures_util::stream::iter(vec![Ok(serde_json::to_vec(&serde_json::json!({"data":[{"id":"chat-model","context_window":64000,"max_output_tokens":8192}]})).unwrap())]))})
+    }
+}
+#[tokio::test]
+async fn provider_form_actions_save_discover_and_select_a_model_for_new_sessions() {
+    let (_dir, w, _) = fixture().await;
+    let mut app = Application::new();
+    app.workspace = Some(w.clone());
+    app.ensure_manager().await.unwrap();
+    app.providers = Some(Arc::new(crate::provider::ProviderRegistry::with_transport(
+        w.root(),
+        Arc::new(DiscoveryHttp),
+    )));
+    let result = app
+        .configure_provider(
+            provider_setup::ProviderAction::Add {
+                name: "gateway".into(),
+                connection: Box::new(crate::provider::compatible_connection(
+                    "https://gateway.test/v1".into(),
+                    crate::provider::AuthConfig::None,
+                )),
+                key: Some("test-ui-key".into()),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(result, CommandOutcome::Text(_)));
+    let result = app
+        .dispatch(
+            Command::Provider(crate::commands::ProviderCommand::Models("gateway".into())),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let catalog = match result {
+        CommandOutcome::ProviderModels(catalog) => catalog,
+        _ => panic!("expected model picker"),
+    };
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.provider_dialog = Some(provider_setup::ProviderDialog::models(*catalog, vec![]));
+    ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let action = match ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+        .unwrap()
+    {
+        Action::Provider(action) => action,
+        _ => panic!("expected model save"),
+    };
+    app.configure_provider(*action, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(app.model, "gateway:chat-model");
+    app.command(Command::New, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        app.manager
+            .as_ref()
+            .unwrap()
+            .active()
+            .unwrap()
+            .metadata()
+            .0
+            .model
+            .model,
+        "gateway:chat-model"
+    );
+    let config = std::fs::read_to_string(w.root().join(".lumen/providers.yaml")).unwrap();
+    assert!(!config.contains("test-ui-key"));
+    assert!(config.contains("gateway:chat-model"));
+    app.manager.as_mut().unwrap().close(None).unwrap();
+    w.close(CancellationToken::new()).await.unwrap();
+}
+
+#[test]
+fn login_picker_filters_presets_and_configured_login_preserves_custom_routes() {
+    use crate::provider::*;
+    let dir = tempfile::tempdir().unwrap();
+    let registry = ProviderRegistry::new(dir.path());
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.provider_dialog = Some(provider_setup::ProviderDialog::providers(
+        registry.provider_catalog().unwrap(),
+        false,
+    ));
+    ui.provider_dialog.as_mut().unwrap().paste("anthropic");
+    ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    ui.provider_dialog
+        .as_mut()
+        .unwrap()
+        .paste("masked-anthropic-test-key");
+    let action = ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+        .unwrap();
+    assert!(
+        matches!(action, Action::Provider(action) if matches!(*action,
+        provider_setup::ProviderAction::Add {ref name, ref connection, key: Some(ref key)}
+        if name == "anthropic" && connection.protocol == ProtocolKind::AnthropicMessages && key == "masked-anthropic-test-key"))
+    );
+    registry
+        .add_provider(
+            "openai".into(),
+            compatible_connection("https://company.test/v1".into(), AuthConfig::None),
+            Some("previous-key"),
+        )
+        .unwrap();
+    let entry = registry
+        .provider_catalog()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "openai")
+        .unwrap();
+    ui.provider_dialog = Some(provider_setup::ProviderDialog::login(&entry));
+    ui.provider_dialog
+        .as_mut()
+        .unwrap()
+        .paste("replacement-key");
+    let action = ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+        .unwrap();
+    assert!(
+        matches!(action, Action::Provider(action) if matches!(*action,
+        provider_setup::ProviderAction::Auth {ref provider, key: Some(ref key), ..}
+        if provider == "openai" && key == "replacement-key"))
+    );
+}
+
+#[test]
+fn custom_provider_form_selects_protocol_and_explicit_authentication() {
+    use crate::provider::*;
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.provider_dialog = Some(provider_setup::ProviderDialog::add(None, None));
+    ui.provider_dialog.as_mut().unwrap().paste("company");
+    ui.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    ui.provider_dialog
+        .as_mut()
+        .unwrap()
+        .paste("https://company.test/v1");
+    ui.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    ui.key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // Responses
+    ui.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    ui.key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)); // None -> Env
+    ui.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    ui.provider_dialog
+        .as_mut()
+        .unwrap()
+        .paste("COMPANY_API_KEY");
+    let action = ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+        .unwrap();
+    assert!(
+        matches!(action, Action::Provider(action) if matches!(*action,
+        provider_setup::ProviderAction::Add {ref connection, key: None, ..}
+        if connection.protocol == ProtocolKind::OpenaiResponses && matches!(&connection.auth, AuthConfig::Env {variable} if variable == "COMPANY_API_KEY")))
+    );
+}
+
+#[test]
+fn model_picker_selects_registered_aliases_directly_and_can_refresh_a_provider() {
+    use crate::provider::*;
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    let models = vec![AvailableModel {
+        provider: "company".into(),
+        alias: Some("research".into()),
+        model: DiscoveredModel {
+            id: "model-a".into(),
+            name: None,
+            context_tokens: Some(64000),
+            max_output_tokens: Some(4096),
+        },
+        connection_key: "test".into(),
+    }];
+    ui.provider_dialog = Some(provider_setup::ProviderDialog::available(
+        models,
+        vec!["company".into()],
+    ));
+    ui.provider_dialog.as_mut().unwrap().paste("research");
+    let action = ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+    assert!(
+        matches!(action, Action::Provider(action) if matches!(*action, provider_setup::ProviderAction::Select(ref alias) if alias == "research"))
+    );
+    ui.provider_dialog = Some(provider_setup::ProviderDialog::available(
+        vec![],
+        vec!["company".into()],
+    ));
+    let action = ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+    assert!(
+        matches!(action, Action::Provider(action) if matches!(*action, provider_setup::ProviderAction::Refresh(ref p) if p == "company"))
+    );
+}
+
+#[tokio::test]
+async fn login_and_model_commands_expose_menus_and_auth_save_works_offline() {
+    let (_dir, w, _) = fixture().await;
+    let mut app = Application::new();
+    app.workspace = Some(w.clone());
+    let menu = app
+        .dispatch(Command::Login(None), CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        matches!(menu, CommandOutcome::ProviderMenu(ref entries, None, false) if entries.iter().any(|e| e.id == "openai") && entries.iter().any(|e| e.id == "anthropic"))
+    );
+    assert!(app
+        .dispatch(
+            Command::Login(Some("unknown".into())),
+            CancellationToken::new()
+        )
+        .await
+        .is_err());
+    // This transport never completes GET. Saving authentication must finish without querying it.
+    struct Offline;
+    #[async_trait::async_trait]
+    impl crate::provider::HttpTransport for Offline {
+        async fn send(
+            &self,
+            _: crate::provider::HttpRequest,
+        ) -> Result<crate::provider::HttpResponse, ProviderError> {
+            panic!("auth save must not POST")
+        }
+        async fn get(
+            &self,
+            _: crate::provider::HttpRequest,
+        ) -> Result<crate::provider::HttpResponse, ProviderError> {
+            panic!("auth save must not GET")
+        }
+    }
+    app.providers = Some(Arc::new(crate::provider::ProviderRegistry::with_transport(
+        w.root(),
+        Arc::new(Offline),
+    )));
+    app.configure_provider(
+        provider_setup::ProviderAction::Add {
+            name: "company".into(),
+            connection: Box::new(crate::provider::compatible_connection(
+                "https://company.test/v1".into(),
+                crate::provider::AuthConfig::None,
+            )),
+            key: Some("offline-test-key".into()),
+        },
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(app.dispatch(Command::Model(None), CancellationToken::new()).await.unwrap(), CommandOutcome::AvailableModels(ref models, ref providers) if models.is_empty() && providers == &["company"])
+    );
+    app.dispatch(
+        Command::Logout(Some("company".into())),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(app.dispatch(Command::Model(None), CancellationToken::new()).await.unwrap(), CommandOutcome::AvailableModels(ref models, ref providers) if models.is_empty() && providers.is_empty())
+    );
+    assert!(
+        !std::fs::read_to_string(w.root().join(".lumen/provider-credentials.json"))
+            .unwrap()
+            .contains("offline-test-key")
+    );
+    app.manager.as_mut().unwrap().close(None).unwrap();
+    w.close(CancellationToken::new()).await.unwrap();
+}

@@ -1,0 +1,10 @@
+[
+  {"id":"openai","label":"OpenAI","protocol":"openai_responses","base_url":"https://api.openai.com/v1","env":"OPENAI_API_KEY"},
+  {"id":"anthropic","label":"Anthropic","protocol":"anthropic_messages","base_url":"https://api.anthropic.com/v1","env":"ANTHROPIC_API_KEY"},
+  {"id":"deepseek","label":"DeepSeek","protocol":"openai_chat","base_url":"https://api.deepseek.com","env":"DEEPSEEK_API_KEY"},
+  {"id":"openrouter","label":"OpenRouter","protocol":"openai_chat","base_url":"https://openrouter.ai/api/v1","env":"OPENROUTER_API_KEY"},
+  {"id":"groq","label":"Groq","protocol":"openai_chat","base_url":"https://api.groq.com/openai/v1","env":"GROQ_API_KEY"},
+  {"id":"mistral","label":"Mistral","protocol":"openai_chat","base_url":"https://api.mistral.ai/v1","env":"MISTRAL_API_KEY"},
+  {"id":"xai","label":"xAI","protocol":"openai_chat","base_url":"https://api.x.ai/v1","env":"XAI_API_KEY"},
+  {"id":"ollama","label":"Ollama (local)","protocol":"openai_chat","base_url":"http://localhost:11434/v1","env":null}
+]

@@ -1,8 +1,8 @@
 use crate::{
     agent::*,
     commands::{
-        self, Command, GoalCommand, IndexCommand, PlanCommand, SessionCommand, SyncCommand,
-        WorkspaceCommand,
+        self, Command, GoalCommand, IndexCommand, PlanCommand, ProviderCommand, SessionCommand,
+        SyncCommand, WorkspaceCommand,
     },
     context::*,
     knowledge::*,
@@ -24,6 +24,9 @@ pub(super) enum CommandOutcome {
     Activated(Box<crate::session::SessionView>),
     Sessions(crate::session::SessionPage),
     History(crate::session::HistoryPage),
+    ProviderModels(Box<crate::provider::ProviderModelCatalog>),
+    ProviderMenu(Vec<crate::provider::ProviderEntry>, Option<String>, bool),
+    AvailableModels(Vec<crate::provider::AvailableModel>, Vec<String>),
     Closed,
 }
 impl CommandOutcome {
@@ -33,6 +36,44 @@ impl CommandOutcome {
             Self::Activated(view) => serde_json::to_string_pretty(view).unwrap(),
             Self::Sessions(page) => serde_json::to_string_pretty(page).unwrap(),
             Self::History(page) => serde_json::to_string_pretty(page).unwrap(),
+            Self::ProviderModels(catalog) => catalog.render(),
+            Self::ProviderMenu(entries, _, _) => entries
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{} · {} · {}",
+                        p.id,
+                        p.label,
+                        if p.configured {
+                            "已配置"
+                        } else {
+                            "未配置"
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Self::AvailableModels(models, _) => {
+                if models.is_empty() {
+                    "暂无可用模型。先 /login 配置认证，再 /models <供应商> 刷新模型列表。".into()
+                } else {
+                    models
+                        .iter()
+                        .map(|m| {
+                            format!(
+                                "{} / {}{}",
+                                m.provider,
+                                m.model.id,
+                                m.alias
+                                    .as_ref()
+                                    .map(|a| format!(" · {a}"))
+                                    .unwrap_or_default()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            }
             Self::Closed => "会话已关闭。".into(),
         }
     }
@@ -45,7 +86,7 @@ pub(super) struct Application {
     pub(super) local_ui: crate::session::SessionUiState,
     pub(super) model: String,
     standalone: PathBuf,
-    providers: Option<Arc<crate::provider::ProviderRegistry>>,
+    pub(super) providers: Option<Arc<crate::provider::ProviderRegistry>>,
     next_model: Option<crate::provider::ModelSelection>,
     #[cfg(test)]
     pub(super) provider: Option<Arc<dyn ModelProvider>>,
@@ -72,6 +113,94 @@ fn display<T: serde::Serialize>(v: T) -> WorkspaceResult<String> {
     Ok(serde_json::to_string_pretty(&v)?)
 }
 impl Application {
+    pub(super) async fn configure_provider(
+        &mut self,
+        action: super::provider_setup::ProviderAction,
+        c: CancellationToken,
+    ) -> WorkspaceResult<CommandOutcome> {
+        use super::provider_setup::ProviderAction;
+        if c.is_cancelled() {
+            return Err(WorkspaceError::Cancelled);
+        }
+        self.ensure_manager().await?;
+        let registry = self.registry();
+        let error = |e: crate::provider::ProviderError| {
+            if e.kind == crate::provider::ProviderErrorKind::Cancelled {
+                WorkspaceError::Cancelled
+            } else {
+                WorkspaceError::Configuration(e.to_string())
+            }
+        };
+        let name = match action {
+            ProviderAction::Add {
+                name,
+                connection,
+                key,
+            } => {
+                registry
+                    .add_provider(name.clone(), *connection, key.as_deref())
+                    .map_err(error)?;
+                name
+            }
+            ProviderAction::Key { provider, key } => {
+                registry.set_api_key(&provider, &key).map_err(error)?;
+                provider
+            }
+            ProviderAction::Auth {
+                provider,
+                auth,
+                key,
+            } => {
+                if let Some(key) = key {
+                    registry.set_api_key(&provider, &key).map_err(error)?;
+                } else {
+                    registry.set_provider_auth(&provider, auth).map_err(error)?;
+                }
+                provider
+            }
+            ProviderAction::Logout(provider) => {
+                registry.logout(&provider).map_err(error)?;
+                return Ok(CommandOutcome::Text(format!(
+                    "{provider} 的本机凭据已移除，模型配置保留。进程环境变量不受影响。"
+                )));
+            }
+            ProviderAction::Refresh(provider) => {
+                return registry
+                    .discover_models(&provider, c)
+                    .await
+                    .map(|catalog| CommandOutcome::ProviderModels(Box::new(catalog)))
+                    .map_err(error)
+            }
+            ProviderAction::Select(alias) => {
+                return Box::pin(self.command_legacy(Command::Model(Some(alias)), c))
+                    .await
+                    .map(CommandOutcome::Text)
+            }
+            ProviderAction::Model(request) => {
+                return self
+                    .save_provider_model(request, c)
+                    .await
+                    .map(CommandOutcome::Text)
+            }
+        };
+        Ok(CommandOutcome::Text(format!("供应商 {name} 的配置与认证已保存。使用 /model 选择模型或刷新列表，也可 /models {name} 查询。保存时未进行网络验证。")))
+    }
+    async fn save_provider_model(
+        &mut self,
+        request: crate::provider::RegisterModel,
+        c: CancellationToken,
+    ) -> WorkspaceResult<String> {
+        let alias = request.alias.clone();
+        let tools = request.tools;
+        self.registry()
+            .register_model(request)
+            .map_err(|e| WorkspaceError::Configuration(e.to_string()))?;
+        match Box::pin(self.command_legacy(Command::Model(Some(alias.clone())),c)).await {
+            Ok(_) if tools=>Ok(format!("模型 {alias} 已保存并选中，可以开始对话。")),
+            Ok(_)=>Ok(format!("模型 {alias} 已保存并选中；当前 TUI Agent 工作流需要支持工具调用的模型。")),
+            Err(e)=>Ok(format!("模型 {alias} 已保存，当前会话未切换：{e}\n可用 /new 创建会话后，再 /model {alias}。")),
+        }
+    }
     fn services_config(&self) -> WorkspaceResult<crate::services::ServicesConfig> {
         let root = self
             .workspace
@@ -146,7 +275,7 @@ impl Application {
         }
         self.dispatch(command, c).await
     }
-    fn registry(&mut self) -> Arc<crate::provider::ProviderRegistry> {
+    pub(super) fn registry(&mut self) -> Arc<crate::provider::ProviderRegistry> {
         let root = self
             .manager
             .as_ref()
@@ -237,6 +366,73 @@ impl Application {
         command: Command,
         c: CancellationToken,
     ) -> WorkspaceResult<CommandOutcome> {
+        if matches!(
+            command,
+            Command::Login(_)
+                | Command::Logout(_)
+                | Command::Provider(ProviderCommand::Add { name: None, .. })
+        ) {
+            self.ensure_manager().await?;
+            let entries = self
+                .registry()
+                .provider_catalog()
+                .map_err(|e| WorkspaceError::Configuration(e.to_string()))?;
+            let logout = matches!(command, Command::Logout(_));
+            let name = match command {
+                Command::Login(name) | Command::Logout(name) => name,
+                _ => None,
+            };
+            if let Some(name) = &name {
+                if !entries
+                    .iter()
+                    .any(|p| &p.id == name && (!logout || p.configured))
+                {
+                    return Err(WorkspaceError::Configuration(
+                        "供应商不存在，请用 /login 查看目录，或 /provider add 添加自定义服务。"
+                            .into(),
+                    ));
+                }
+                if logout {
+                    self.registry()
+                        .logout(name)
+                        .map_err(|e| WorkspaceError::Configuration(e.to_string()))?;
+                    return Ok(CommandOutcome::Text(format!(
+                        "{name} 的本机凭据已移除，环境变量不受影响。"
+                    )));
+                }
+            }
+            return Ok(CommandOutcome::ProviderMenu(entries, name, logout));
+        }
+        if matches!(command, Command::Model(None)) {
+            self.ensure_manager().await?;
+            let registry = self.registry();
+            let models = registry
+                .available_models()
+                .map_err(|e| WorkspaceError::Configuration(e.to_string()))?;
+            let providers = registry
+                .provider_catalog()
+                .map_err(|e| WorkspaceError::Configuration(e.to_string()))?
+                .into_iter()
+                .filter(|p| p.configured && p.authenticated)
+                .map(|p| p.id)
+                .collect();
+            return Ok(CommandOutcome::AvailableModels(models, providers));
+        }
+        if let Command::Provider(ProviderCommand::Models(name)) = &command {
+            self.ensure_manager().await?;
+            let catalog = self
+                .registry()
+                .discover_models(name, c)
+                .await
+                .map_err(|e| {
+                    if e.kind == crate::provider::ProviderErrorKind::Cancelled {
+                        WorkspaceError::Cancelled
+                    } else {
+                        WorkspaceError::Configuration(e.to_string())
+                    }
+                })?;
+            return Ok(CommandOutcome::ProviderModels(Box::new(catalog)));
+        }
         use crate::session::*;
         if matches!(
             command,
@@ -380,6 +576,31 @@ impl Application {
         c: CancellationToken,
     ) -> WorkspaceResult<String> {
         match command {
+            Command::Provider(command) => {
+                self.ensure_manager().await?;
+                let registry = self.registry();
+                match command {
+                    ProviderCommand::Add { name, base_url } => {
+                        let name = name.ok_or_else(|| WorkspaceError::Configuration("使用 /login 查看供应商目录。".into()))?;
+                        let connection = match base_url {
+                            Some(url) => crate::provider::compatible_connection(url, crate::provider::AuthConfig::None),
+                            None => crate::provider::provider_preset(&name).ok_or_else(|| WorkspaceError::Configuration("自定义供应商需要 Base URL。".into()))?.connection(),
+                        };
+                        registry.add_provider(name.clone(), connection, None).map_err(|e| WorkspaceError::Configuration(e.to_string()))?;
+                        Ok(format!("供应商 {name} 已添加。使用 /login {name} 配置认证，再 /models {name} 查询模型。"))
+                    },
+                    ProviderCommand::Key(_)=>Err(WorkspaceError::Configuration("请在全屏模式的隐藏输入框录入 Key；行模式使用 /provider auth <名称> env <环境变量名>，不要直接把 Key 写进命令。".into())),
+                    ProviderCommand::Auth {name,variable}=>{
+                        registry.set_provider_auth(&name,variable.map(|variable|crate::provider::AuthConfig::Env {variable}).unwrap_or(crate::provider::AuthConfig::None)).map_err(|e|WorkspaceError::Configuration(e.to_string()))?;
+                        Ok(format!("供应商 {name} 的认证方式已更新。"))
+                    },
+                    ProviderCommand::Model {provider,model_id,alias,context_tokens,output_tokens,tools}=>self.save_provider_model(crate::provider::RegisterModel {provider,model_id,alias,context_tokens,output_tokens,tools,make_default:true,connection_key:None},c).await,
+                    ProviderCommand::Models(_)=>unreachable!("model discovery dispatched separately"),
+                }
+            }
+            Command::Login(_) | Command::Logout(_) => {
+                unreachable!("auth commands dispatched separately")
+            }
             Command::Help => Ok(commands::help().into()),
             Command::Clear => Ok("\x1b[2J\x1b[H".into()),
             Command::New

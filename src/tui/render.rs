@@ -262,6 +262,9 @@ pub fn draw(frame: &mut Frame, ui: &mut Ui) {
             1,
         ),
     );
+    if let Some(dialog) = &ui.provider_dialog {
+        super::provider_setup::draw(frame, dialog, ui.theme, area);
+    }
 }
 fn session_panel(frame: &mut Frame, ui: &Ui, area: Rect) {
     let width = area.width.saturating_sub(4).min(100);

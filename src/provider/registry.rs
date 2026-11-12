@@ -38,6 +38,9 @@ impl ProviderRegistry {
     }
     pub fn default_selection(&self) -> Result<ModelSelection, ProviderError> {
         if let Some(c) = self.config()? {
+            if c.models.is_empty() {
+                return Ok(ModelSelection::Mock);
+            }
             return Ok(ModelSelection::Reference {
                 model_ref: c.default_model,
                 overrides: Default::default(),
@@ -122,6 +125,15 @@ impl ProviderRegistry {
         clients.insert(key, c.clone());
         Ok(c)
     }
+    pub(crate) fn discovery_transport(
+        &self,
+        t: &TransportConfig,
+    ) -> Result<Arc<dyn HttpTransport>, ProviderError> {
+        match &self.http {
+            Some(http) => Ok(http.clone()),
+            None => Ok(Arc::new(ReqwestTransport::new(self.client(t)?))),
+        }
+    }
     pub async fn resolve(
         &self,
         s: &ModelSelection,
@@ -189,7 +201,7 @@ impl ProviderRegistry {
                     endpoint,
                     p.state_scope.clone(),
                     if credentials {
-                        Secret::resolve(&p.auth)?
+                        Secret::resolve_at(&p.auth, &self.root)?
                     } else {
                         None
                     },
@@ -220,7 +232,7 @@ impl ProviderRegistry {
                     p.endpoint,
                     profile_ref.clone(),
                     if credentials {
-                        Secret::resolve(&p.auth)?
+                        Secret::resolve_at(&p.auth, &self.root)?
                     } else {
                         None
                     },
@@ -272,7 +284,7 @@ impl ProviderRegistry {
         })
     }
     pub fn providers(&self) -> Result<serde_json::Value, ProviderError> {
-        Ok(match self.config()? {Some(c)=>serde_json::json!(c.providers.iter().map(|(name,p)|serde_json::json!({"provider":name,"protocol":p.protocol,"auth":match p.auth {AuthConfig::None=>"none",AuthConfig::Env{..}=>"env"},"configured":true})).collect::<Vec<_>>()),None=>serde_json::json!({"legacy":true})})
+        Ok(match self.config()? {Some(c)=>serde_json::json!(c.providers.iter().map(|(name,p)|serde_json::json!({"provider":name,"protocol":p.protocol,"auth":match p.auth {AuthConfig::None=>"none",AuthConfig::Env{..}=>"env",AuthConfig::Local{..}=>"local"},"configured":true})).collect::<Vec<_>>()),None=>serde_json::json!({"legacy":true})})
     }
 }
 pub(crate) fn finalize_descriptor(

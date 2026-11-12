@@ -58,6 +58,14 @@
 
 模型窗口容量、最大输出、协议格式及 Skill 目录配置见 [README](../README.md)。
 
+## 供应商与模型配置
+
+`/login` 打开可搜索的供应商目录，↑↓ 选择、Enter 打开配置；`/login <ID>` 直接进入。预设和已配置的自定义供应商使用同一套表单，新建自定义服务可选择 Chat Completions、Responses 或 Anthropic Messages 协议。认证方式可选 API Key、环境变量、无认证。Key 隐藏显示，支持粘贴；Tab/↑↓ 切换字段，最后一项 Enter 或 Ctrl+Enter 保存，Esc 取消。保存认证不发送网络请求。
+
+`/model` 搜索已配置及已缓存的模型，Enter 直接切换已注册模型；也可选择供应商刷新远端列表。首次选择未注册的模型时需确认容量、别名和工具能力。缺失容量需要手工填写；模型规格不按名称猜测。`/models <供应商>` 也可刷新列表，`/logout [名称]` 移除本机 Key。
+
+`/provider add` 是目录入口的兼容命令；`/provider add <名称> <Base URL>` 直接打开自定义表单，`/provider key <名称>` 修改 Key。无参数 `/models` 和 `/providers` 查看本机配置。表单和 Key 不进入聊天、会话草稿；范围、凭据保存方式与行模式命令详见 [供应商配置](providers.md)。
+
 ## 学习与研究命令
 
 `/goal` 管理学习目标，`/plan show`、`/plan generate`、`/plan add`、`/plan move`、`/plan remove` 管理路线。`/progress` 查看完成情况和下一步，`/study` 开始导师对话，`/answer` 提交评估，`/review` 保存复盘；手工路线和完成记录可离线使用。具体参数见 [学习使用说明](study.md)。

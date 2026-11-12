@@ -67,8 +67,10 @@ src/provider/
   mod.rs                  对外导出
   registry.rs             模型解析、工厂注册、客户端池
   config.rs               配置 schema、默认值、校验
+  catalog.rs / catalog.json 数据驱动的供应商预设、可用模型合并
+  management.rs           本机认证管理、显式模型发现与缓存
   legacy.rs               旧 profile/env/SessionModel 转换
-  credentials.rs          env/none、secret 脱敏
+  credentials.rs          env/local/none、secret 脱敏
   capabilities.rs         能力、参数与容量约束
   error.rs / usage.rs     统一错误和用量语义
   transport.rs / sse.rs   HTTP、取消、超时、SSE 分帧
@@ -172,7 +174,7 @@ models:
       cache: provider_default
 ```
 
-上述容量只是配置示例。真实模型的协议、model_id、容量和 auth 必须显式配置；不按模型名猜规格，不发网络请求自动发现。另两个协议使用对应的 typed protocol_options，未知字段、未知版本、重复键都报配置错误。
+上述容量只是配置示例。真实模型的协议、model_id、容量和 auth 必须显式配置，不按模型名猜规格。供应商预设只填入连接信息；模型发现由 `/model` 中的刷新选项或 `/models <供应商>` 显式触发 GET，不发送聊天请求。接口未返回容量时必须手工补充，发现结果按连接缓存。另两个协议使用对应的 typed protocol_options，未知字段、未知版本、重复键都报配置错误。
 
 state_scope 是本机声明的非敏感账号/项目作用域，真实连接必填；同一账号轮换密钥保持不变，改用另一个账号或项目时必须更换，用于原生状态兼容判断，不作为认证依据。
 
@@ -182,7 +184,7 @@ base_url 保留服务前缀（例如 /v1），适配器仅追加 chat/completion
 
 | 项 | 默认值与约束 |
 | --- | --- |
-| default_model | 存在新配置时必填且引用有效 |
+| default_model | 有模型时必填且引用有效；供应商已添加但模型列表为空时允许空字符串 |
 | transport.mode | sse；端点可显式选 json，不依据失败响应自动降级 |
 | connect / first byte / idle / request | 10s / 60s / 30s / 120s，可配置，受 Loop 整体 deadline 约束 |
 | SSE 单 event 上限 | 1 MiB，字节限长在解码之前执行 |

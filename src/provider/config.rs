@@ -1,7 +1,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     pub schema_version: u32,
@@ -9,7 +9,7 @@ pub struct ProviderConfig {
     pub providers: BTreeMap<String, ProviderConnection>,
     pub models: BTreeMap<String, ModelDefinition>,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderConnection {
     pub protocol: ProtocolKind,
@@ -21,10 +21,11 @@ pub struct ProviderConnection {
     #[serde(default)]
     pub protocol_options: ProtocolOptions,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AuthConfig {
     Env { variable: String },
+    Local { credential: String },
     None,
 }
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -67,7 +68,7 @@ pub enum OutputTokenField {
     MaxTokens,
     MaxCompletionTokens,
 }
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelDefinition {
     pub provider: String,
@@ -105,7 +106,9 @@ impl ProviderConfig {
                 "unsupported provider config version",
             ));
         }
-        if !self.models.contains_key(&self.default_model) {
+        if !(self.models.contains_key(&self.default_model)
+            || self.models.is_empty() && self.default_model.is_empty())
+        {
             return Err(ProviderError::configuration(
                 "default_model must reference a configured model",
             ));
@@ -165,6 +168,18 @@ impl ProviderConfig {
                 if variable.trim().is_empty() {
                     return Err(ProviderError::configuration(
                         "credential env reference is empty",
+                    ));
+                }
+            }
+            if let AuthConfig::Local { credential } = &p.auth {
+                if credential.is_empty()
+                    || credential.len() > 128
+                    || !credential
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                {
+                    return Err(ProviderError::configuration(
+                        "invalid local credential reference",
                     ));
                 }
             }

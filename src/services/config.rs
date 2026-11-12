@@ -24,6 +24,11 @@ fn request_timeout() -> u64 {
 }
 impl ServiceEndpoint {
     pub fn validate(&self) -> R<()> {
+        if matches!(self.auth, AuthConfig::Local { .. }) {
+            return Err(E::Configuration(
+                "services.yaml credentials use env or none".into(),
+            ));
+        }
         let url = reqwest::Url::parse(&self.endpoint)
             .map_err(|_| E::Configuration("invalid service endpoint".into()))?;
         if !matches!(url.scheme(), "http" | "https")
