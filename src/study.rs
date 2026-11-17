@@ -643,7 +643,14 @@ impl AgentTool for StudyTool {
         self.name
     }
     fn description(&self) -> &str {
-        "Manage persistent learning goals and ordered routes. Read the goal revision before updating. Use learning_record for observed study or assessment evidence; a generated plan is not evidence of mastery."
+        match self.name {
+            "goal_list" => "List persistent local learning goals. Check existing goals before creating another for the same intent.",
+            "goal_create" => "Create a persistent local learning goal from the user's objective and description. Creating a goal is not evidence of study or mastery.",
+            "goal_read" => "Read a local goal, its settings, ordered units, and current revision. Read before modifying the goal or replacing its plan.",
+            "goal_update" => "Update one goal field using its current expected_revision. Preserve other settings; reread on conflict. Local changes do not commit or synchronize.",
+            "plan_apply" => "Replace a goal's ordered learning route using its current expected_revision and existing unit revisions where applicable. Read the goal first and preserve units the user wants to keep. A generated plan is not mastery evidence.",
+            _ => "Read goal progress, unit completion, next unit, and recorded learning evidence. Use learning_record for actual observations; do not mark progress from an assistant explanation alone.",
+        }
     }
     fn input_schema(&self) -> serde_json::Value {
         let string = json!({"type":"string"});

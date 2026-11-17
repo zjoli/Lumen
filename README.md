@@ -154,6 +154,8 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 上下文由统一插件管理，检索与 Skill 按需追加，达到水位时生成结构化摘要并提交可恢复检查点。`/context` 查看窗口分区与预留，`/compact` 安排下一请求前压缩，`/skills` 查看本地 Skill。
 
+核心系统规则采用独立的版本化模板，涵盖学习支持、研究引用、真实工具结果、知识写入与上下文解释。已有会话在下次发送消息时追加当前规则，保留原始历史，模型窗口只采用最新应用规则；自定义 System 消息保留。模板位置和升级机制见 [核心规则与工具指导](docs/architecture/core-prompt.md)。
+
 会话管理支持 `/sessions [query]` 列表与搜索、`/new [title]` 新建、`/resume <session-id>` 切换与恢复、`/session rename <title>` 重命名、`/session archive [id]` 归档、`/session unarchive <id>` 取消归档及 `/session close` 关闭。TUI 列表支持输入过滤、↑↓ 选择、Enter 打开、PgDn 下一页；对话区支持鼠标滚轮和 PgUp/PgDn，顶部继续向上滚动加载更早历史；翻阅时显示可点击的“回到最新”，Ctrl+End 也可恢复自动跟随。切换会恢复聊天、草稿和阅读位置，运行中需要先 `/stop` 并等待收尾；列表和详情仍可查看。
 
 工作区会话保存于 `sessions/<id>/session.yaml` 和不可变 JSONL 片段。无工作区时使用 `LUMEN_SESSION_DIR` 指定的目录，默认位于平台应用数据目录下的 `lumen/`；启动恢复最近会话。旧 `LUMEN_SESSION` 文件保留原样，目标目录默认为同路径的 `.sessions` 目录；用 `/session preview <file>` 只读浏览、`/session import <file>` 幂等导入，再 `/resume <id>` 继续。

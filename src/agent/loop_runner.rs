@@ -300,6 +300,7 @@ impl AgentLoop {
                     .await?;
                 }
                 messages.retain(|m| !matches!(m, AgentMessage::Custom { .. }));
+                normalize_core_prompt(&mut messages);
                 self.provider.prepare(ModelRequest {
                     messages,
                     tools: tools.clone(),

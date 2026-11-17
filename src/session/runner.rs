@@ -215,7 +215,7 @@ impl SessionRunner {
                 .bind_managed_writer(Some(writer.clone()))
                 .await
                 .map_err(super::manager::agent_error)?;
-            if runtime.snapshot().await.messages.is_empty() {
+            if needs_core_update(&runtime.snapshot().await.messages, core) {
                 runtime
                     .append(AgentMessage::System(core.into()))
                     .await

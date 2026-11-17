@@ -147,6 +147,8 @@ impl ContextWindowPlugin {
                     .cloned(),
             );
         }
+        // A prompt upgrade retires only old app-owned rules, preserving compacted history.
+        reset |= normalize_core_prompt(&mut next.projection);
         // A configuration change invalidates encoding, not committed compaction coverage.
         // Replaying all raw history here would resurrect discarded native provider state.
         if reset {

@@ -90,6 +90,66 @@ fn agent(session: Arc<SessionRuntime>, provider: Arc<Recording>) -> AgentLoop {
     ));
     agent
 }
+
+#[tokio::test]
+async fn core_upgrade_preserves_compacted_projection_and_reaches_provider() {
+    let session = SessionRuntime::memory();
+    let old_core = "Lumen core rules v0\nold application guidance";
+    session
+        .append(AgentMessage::System(old_core.into()))
+        .await
+        .unwrap();
+    let provider = Arc::new(Recording::default());
+    provider
+        .answers
+        .lock()
+        .unwrap()
+        .push_back(answer(&"old explanation ".repeat(400)));
+    let mut state = state();
+    agent(session.clone(), provider.clone())
+        .run(user("first goal"), &mut state, CancellationToken::new())
+        .await
+        .unwrap();
+    agent(session.clone(), provider.clone())
+        .run(user("second goal"), &mut state, CancellationToken::new())
+        .await
+        .unwrap();
+    session.request_compaction();
+    agent(session.clone(), provider.clone())
+        .run(user("continue"), &mut state, CancellationToken::new())
+        .await
+        .unwrap();
+    let compacted = session.snapshot().await;
+    assert!(compacted.window.projection.len() < compacted.messages.len());
+
+    session
+        .append(AgentMessage::System(LUMEN_CORE_PROMPT.into()))
+        .await
+        .unwrap();
+    // SessionRunner rebuilds AgentState after appending the upgraded core.
+    state.messages = session.snapshot().await.messages;
+    let result = agent(session.clone(), provider.clone())
+        .run(user("latest task"), &mut state, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(result.error.is_none(), "{:?}", result.error);
+    let requests = provider.requests.lock().unwrap();
+    let request = requests.last().unwrap();
+    assert_eq!(
+        request.messages[0],
+        AgentMessage::System(LUMEN_CORE_PROMPT.into())
+    );
+    assert!(!request
+        .messages
+        .contains(&AgentMessage::System(old_core.into())));
+    assert!(!request.messages.iter().any(|m| matches!(m, AgentMessage::Assistant(a) if a.content == user(&"old explanation ".repeat(400)))));
+    for message in compacted.window.projection.iter().skip(1) {
+        assert!(
+            request.messages.contains(message),
+            "upgrade dropped compacted state"
+        );
+    }
+}
 struct Reference {
     content: String,
     required: bool,
