@@ -2,12 +2,7 @@
 use super::{input::Editor, render, text, theme::Theme};
 use crate::provider::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{
-    layout::Rect,
-    text::Line,
-    widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
-};
+use ratatui::{layout::Rect, widgets::Paragraph, Frame};
 
 pub(super) enum ProviderAction {
     Add {
@@ -118,8 +113,8 @@ impl ProviderDialog {
             kind: FormKind::Auth(entry.id.clone()),
             fields: vec![
                 Field::choice("认证方式", mode, vec!["API Key", "环境变量", "无认证"]),
-                Field::new("环境变量名（选择环境变量时必填）", env),
-                Field::secret("API Key（隐藏显示）"),
+                Field::new("环境变量", env),
+                Field::secret("API Key"),
             ],
             selected: if mode == "API Key" { 2 } else { 0 },
             error: None,
@@ -155,15 +150,15 @@ impl ProviderDialog {
             kind: FormKind::Add,
             fields: vec![
                 Field::new("供应商 ID", name),
-                Field::new("Base URL（保留 /v1 等前缀）", connection.base_url),
+                Field::new("Base URL", connection.base_url),
                 Field::choice(
                     "API 协议",
                     protocol,
                     vec!["openai_chat", "openai_responses", "anthropic_messages"],
                 ),
                 Field::choice("认证方式", mode, vec!["API Key", "环境变量", "无认证"]),
-                Field::new("环境变量名（选择环境变量时必填）", env),
-                Field::secret("API Key（隐藏显示）"),
+                Field::new("环境变量", env),
+                Field::secret("API Key"),
             ],
             selected: if preset && mode == "API Key" { 5 } else { 0 },
             error: None,
@@ -172,7 +167,7 @@ impl ProviderDialog {
     pub fn key(provider: String) -> Self {
         Self::Form(Form {
             kind: FormKind::Key(provider),
-            fields: vec![Field::secret("新的 API Key（隐藏显示）")],
+            fields: vec![Field::secret("新的 API Key")],
             selected: 0,
             error: None,
         })
@@ -200,7 +195,7 @@ impl ProviderDialog {
                 connection_key: catalog.connection_key.clone(),
             },
             fields: vec![
-                Field::new("本机模型别名", format!("{}:{}", catalog.provider, model.id)),
+                Field::new("模型别名", format!("{}:{}", catalog.provider, model.id)),
                 Field::new(
                     "上下文容量（tokens）",
                     model
@@ -209,7 +204,7 @@ impl ProviderDialog {
                         .unwrap_or_default(),
                 ),
                 Field::new(
-                    "本次使用的输出上限（tokens）",
+                    "输出上限（tokens）",
                     model
                         .max_output_tokens
                         .map(|n| {
@@ -220,8 +215,8 @@ impl ProviderDialog {
                         })
                         .unwrap_or_default(),
                 ),
-                Field::toggle("支持工具调用（请按模型实际能力确认）", "是"),
-                Field::toggle("设为新会话默认模型", "否"),
+                Field::toggle("工具调用", "是"),
+                Field::toggle("新会话默认模型", "否"),
             ],
             selected: if model.context_tokens.is_some() { 0 } else { 1 },
             error: None,
@@ -516,73 +511,57 @@ fn edit_key(editor: &mut Editor, key: KeyEvent) {
     }
 }
 pub(super) fn draw(frame: &mut Frame, dialog: &ProviderDialog, theme: Theme, area: Rect) {
-    let width = area.width.saturating_sub(2).min(82);
-    let height = area.height.saturating_sub(2).min(20);
-    if width < 12 || height < 5 {
-        return;
-    }
-    let rect = Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    );
-    frame.render_widget(Clear, rect);
     let title = match dialog {
         ProviderDialog::Form(form) => match &form.kind {
-            FormKind::Add => "添加模型供应商".into(),
-            FormKind::Key(p) => format!("修改 {p} 的 API Key"),
-            FormKind::Auth(p) => format!("认证 · {p}"),
-            FormKind::Model { model_id, .. } => format!("配置模型 {model_id}"),
+            FormKind::Add => "添加供应商".into(),
+            FormKind::Key(p) => format!("API Key · {p}"),
+            FormKind::Auth(p) => format!("供应商认证 · {p}"),
+            FormKind::Model { model_id, .. } => format!("模型配置 · {model_id}"),
         },
         ProviderDialog::Models(p) => format!("{} · 选择可用模型", p.catalog.provider),
         ProviderDialog::Providers(p) => if p.logout {
             "退出供应商认证"
         } else {
-            "选择供应商 · /login"
+            "供应商"
         }
         .into(),
-        ProviderDialog::Available(_) => "选择模型 · /model".into(),
+        ProviderDialog::Available(_) => "选择模型".into(),
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(Line::from(render::span(title, theme.accent())))
-        .style(theme.base())
-        .border_style(theme.border(true));
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
-    let row = |offset: u16| {
-        Rect::new(
-            inner.x + 1,
-            inner.y + offset,
-            inner.width.saturating_sub(2),
-            1,
-        )
+    let height = match dialog {
+        ProviderDialog::Form(form) => (form.fields.len() as u16 * 2 + 4).min(20),
+        _ => 20,
     };
+    let Some(inner) = render::modal(frame, area, theme, &title, 82, height) else {
+        return;
+    };
+    let row = |offset| Rect::new(inner.x, inner.y + offset, inner.width, 1);
     match dialog {
         ProviderDialog::Providers(picker) => {
-            let mut labels: Vec<String> = picker
+            let mut labels: Vec<_> = picker
                 .filtered()
                 .iter()
                 .map(|p| {
-                    format!(
-                        "{} · {} · {}",
-                        p.label,
-                        p.id,
+                    (
+                        p.label.clone(),
                         if p.configured && p.authenticated {
-                            "已配置 · 认证可用"
+                            "已配置"
                         } else if p.configured {
-                            "已配置 · 缺少凭据"
+                            "缺少凭据"
                         } else if p.authenticated {
-                            "环境变量/免认证"
+                            if matches!(p.connection.auth, AuthConfig::None) {
+                                "无认证"
+                            } else {
+                                "环境变量"
+                            }
                         } else {
                             "未配置"
                         }
+                        .into(),
                     )
                 })
                 .collect();
             if !picker.logout {
-                labels.push("+ 添加自定义供应商（选择 API 协议）".into());
+                labels.push(("添加自定义供应商".into(), "自定义".into()));
             }
             draw_picker(
                 frame,
@@ -591,22 +570,21 @@ pub(super) fn draw(frame: &mut Frame, dialog: &ProviderDialog, theme: Theme, are
                 picker.selected,
                 labels,
                 theme,
-                "输入筛选 · ↑↓ 选择 · Enter 继续 · Esc 取消",
+                "↑↓ 选择 · Enter 继续 · Esc 取消",
             );
         }
         ProviderDialog::Available(picker) => {
-            let mut labels: Vec<String> = picker
+            let mut labels: Vec<_> = picker
                 .filtered()
                 .iter()
                 .map(|m| {
-                    format!(
-                        "{} / {}{}",
-                        m.provider,
-                        m.model.id,
-                        m.alias
-                            .as_ref()
-                            .map(|a| format!(" · {a}"))
-                            .unwrap_or_else(|| " · 待配置".into())
+                    (
+                        m.model.id.clone(),
+                        if let Some(alias) = &m.alias {
+                            format!("{} · {alias}", m.provider)
+                        } else {
+                            format!("{} · 待配置", m.provider)
+                        },
                     )
                 })
                 .collect();
@@ -614,7 +592,7 @@ pub(super) fn draw(frame: &mut Frame, dialog: &ProviderDialog, theme: Theme, are
                 picker
                     .filtered_providers()
                     .iter()
-                    .map(|p| format!("↻ {p} · 查询/刷新远端模型")),
+                    .map(|p| ("刷新模型列表".into(), (*p).clone())),
             );
             draw_picker(
                 frame,
@@ -623,12 +601,12 @@ pub(super) fn draw(frame: &mut Frame, dialog: &ProviderDialog, theme: Theme, are
                 picker.selected,
                 labels,
                 theme,
-                "输入筛选 · ↑↓ 选择 · Enter 确认 · Esc 返回",
+                "↑↓ 选择 · Enter 确认 · Esc 返回",
             );
         }
 
         ProviderDialog::Form(form) => {
-            let visible = inner.height.saturating_sub(4) as usize / 2;
+            let visible = inner.height.saturating_sub(2) as usize / 2;
             let start = form.selected.saturating_sub(visible.saturating_sub(1));
             for (i, field) in form.fields.iter().enumerate().skip(start).take(visible) {
                 let y = ((i - start) * 2) as u16;
@@ -664,7 +642,11 @@ pub(super) fn draw(frame: &mut Frame, dialog: &ProviderDialog, theme: Theme, are
                 frame.render_widget(
                     Paragraph::new(render::span(
                         lines.get(at).cloned().unwrap_or_default(),
-                        theme.base(),
+                        if i == form.selected {
+                            theme.surface()
+                        } else {
+                            theme.base()
+                        },
                     )),
                     row(y + 1),
                 );
@@ -672,87 +654,53 @@ pub(super) fn draw(frame: &mut Frame, dialog: &ProviderDialog, theme: Theme, are
                     frame.set_cursor_position((row(y + 1).x + x as u16, row(y + 1).y));
                 }
             }
-            let note = if matches!(form.kind, FormKind::Model { .. }) {
-                "接口未提供的容量需手工填写；请确认工具能力。"
+            let note = if let Some(error) = form.error.as_deref() {
+                error
+            } else if form.fields[form.selected].secret {
+                "API Key 仅保存在本机"
+            } else if matches!(form.kind, FormKind::Model { .. }) {
+                "容量和工具能力以模型规格为准"
+            } else if !form.fields[form.selected].choices.is_empty() {
+                "←→ 切换选项"
             } else {
-                "Key 仅保存在本机，不写入聊天或会话草稿。"
+                ""
             };
             frame.render_widget(
-                Paragraph::new(render::span(note, theme.muted())),
-                row(inner.height - 3),
-            );
-            frame.render_widget(
                 Paragraph::new(render::span(
-                    form.error
-                        .as_deref()
-                        .unwrap_or("Tab/↑↓ 切换 · ←→/空格 选择 · Ctrl+Enter 保存"),
-                    theme.accent(),
+                    text::truncate(note, inner.width as usize),
+                    if form.error.is_some() {
+                        theme.error()
+                    } else {
+                        theme.muted()
+                    },
                 )),
                 row(inner.height - 2),
             );
             frame.render_widget(
                 Paragraph::new(render::span(
-                    "最后一项 Enter 保存 · Esc 取消",
+                    text::truncate(
+                        "Tab/↑↓ 切换 · Ctrl+Enter 保存 · Esc 取消",
+                        inner.width as usize,
+                    ),
                     theme.muted(),
                 )),
                 row(inner.height - 1),
             );
         }
         ProviderDialog::Models(picker) => {
-            let cursor =
-                text::width("筛选：") + text::width(&picker.filter.text[..picker.filter.cursor]);
-            frame.set_cursor_position((
-                row(0).x + (cursor as u16).min(row(0).width.saturating_sub(1)),
-                row(0).y,
-            ));
-            frame.render_widget(
-                Paragraph::new(render::span(
-                    format!("筛选：{}", picker.filter.text),
-                    theme.accent(),
-                )),
-                row(0),
-            );
-            let choices = picker.filtered();
-            let visible = inner.height.saturating_sub(3) as usize;
-            let start = picker.selected.saturating_sub(visible.saturating_sub(1));
-            for (i, model) in choices.iter().enumerate().skip(start).take(visible) {
-                let label = format!(
-                    "{} {}{}",
-                    if i == picker.selected { "›" } else { " " },
-                    model.id,
-                    model
-                        .name
-                        .as_ref()
-                        .map(|s| format!(" · {s}"))
-                        .unwrap_or_default()
-                );
-                frame.render_widget(
-                    Paragraph::new(render::span(
-                        text::truncate(&label, row(0).width as usize),
-                        if i == picker.selected {
-                            theme.selected()
-                        } else {
-                            theme.base()
-                        },
-                    )),
-                    row((i - start + 1) as u16),
-                );
-            }
-            if choices.is_empty() {
-                frame.render_widget(
-                    Paragraph::new(render::span(
-                        "没有匹配的模型；Esc 返回，可手工添加。",
-                        theme.muted(),
-                    )),
-                    row(1),
-                );
-            }
-            frame.render_widget(
-                Paragraph::new(render::span(
-                    "输入筛选 · ↑↓ 选择 · Enter 配置模型 · Esc 返回",
-                    theme.muted(),
-                )),
-                row(inner.height - 1),
+            let labels = picker
+                .filtered()
+                .iter()
+                .map(|model| (model.id.clone(), model.name.clone().unwrap_or_default()))
+                .collect();
+            draw_picker(
+                frame,
+                inner,
+                &picker.filter,
+                picker.selected,
+                labels,
+                theme,
+                "↑↓ 选择 · Enter 确认 · Esc 返回",
             );
         }
     }
@@ -850,49 +798,62 @@ fn draw_picker(
     inner: Rect,
     filter: &Editor,
     selected: usize,
-    labels: Vec<String>,
+    labels: Vec<(String, String)>,
     theme: Theme,
     hint: &str,
 ) {
-    let row = |y| Rect::new(inner.x + 1, inner.y + y, inner.width.saturating_sub(2), 1);
-    frame.render_widget(
-        Paragraph::new(render::span(
-            format!("筛选：{}", filter.text),
-            theme.accent(),
-        )),
-        row(0),
+    render::filter_input(
+        frame,
+        Rect::new(inner.x, inner.y, inner.width, 1),
+        &filter.text,
+        filter.cursor,
+        theme,
     );
-    let cursor = text::width("筛选：") + text::width(&filter.text[..filter.cursor]);
-    frame.set_cursor_position((
-        row(0).x + (cursor as u16).min(row(0).width.saturating_sub(1)),
-        row(0).y,
-    ));
     let visible = inner.height.saturating_sub(3) as usize;
     let start = selected.saturating_sub(visible.saturating_sub(1));
-    for (i, label) in labels.iter().enumerate().skip(start).take(visible) {
+    for (i, (label, detail)) in labels.iter().enumerate().skip(start).take(visible) {
+        let rect = Rect::new(inner.x, inner.y + (i - start + 2) as u16, inner.width, 1);
+        let style = if selected == i {
+            theme.selected()
+        } else {
+            theme.base()
+        };
+        let detail = text::truncate(&text::clean(detail), inner.width as usize / 3);
+        let detail_width = text::width(&detail) as u16;
+        let title_width = inner.width.saturating_sub(detail_width + 2);
         frame.render_widget(
             Paragraph::new(render::span(
-                text::truncate(
-                    &format!("{} {label}", if selected == i { "›" } else { " " }),
-                    row(0).width as usize,
+                format!(
+                    "{} {}",
+                    if selected == i { "›" } else { " " },
+                    text::truncate(&text::clean(label), title_width.saturating_sub(2) as usize)
                 ),
-                if selected == i {
-                    theme.selected()
-                } else {
-                    theme.base()
-                },
-            )),
-            row((i - start + 1) as u16),
+                style,
+            ))
+            .style(style),
+            rect,
         );
+        if detail_width > 0 {
+            frame.render_widget(
+                Paragraph::new(render::span(
+                    detail,
+                    if selected == i { style } else { theme.muted() },
+                )),
+                Rect::new(rect.right() - detail_width, rect.y, detail_width, 1),
+            );
+        }
     }
-    if labels.is_empty() {
+    if labels.is_empty() && visible > 0 {
         frame.render_widget(
             Paragraph::new(render::span("没有匹配项", theme.muted())),
-            row(1),
+            Rect::new(inner.x, inner.y + 2, inner.width, 1),
         );
     }
     frame.render_widget(
-        Paragraph::new(render::span(hint, theme.muted())),
-        row(inner.height - 1),
+        Paragraph::new(render::span(
+            text::truncate(hint, inner.width as usize),
+            theme.muted(),
+        )),
+        Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
     );
 }

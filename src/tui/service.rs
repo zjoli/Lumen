@@ -603,6 +603,9 @@ impl Application {
             }
             Command::Help => Ok(commands::help().into()),
             Command::Clear => Ok("\x1b[2J\x1b[H".into()),
+            Command::Copy { .. } => Err(WorkspaceError::Configuration(
+                "/copy 用于全屏 TUI；行模式请通过终端选择文字复制。".into(),
+            )),
             Command::New
             | Command::NewTitled(_)
             | Command::Resume(_)

@@ -86,13 +86,9 @@ pub fn render(source: &str, width: usize, theme: Theme) -> Rendered {
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
     ) {
         match event {
-            Event::Start(Tag::Heading { level, .. }) => {
+            Event::Start(Tag::Heading { .. }) => {
                 w.blank();
                 w.heading = Some((w.out.lines.len(), String::new()));
-                w.spans.push(Span::styled(
-                    format!("{} ", "#".repeat(level as usize)),
-                    theme.violet().add_modifier(Modifier::BOLD),
-                ));
                 w.style(theme.base().add_modifier(Modifier::BOLD));
             }
             Event::End(TagEnd::Heading(_)) => {

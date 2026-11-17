@@ -15,262 +15,28 @@ use ratatui::{
 pub fn span(value: impl Into<String>, style: Style) -> Span<'static> {
     Span::styled(text::clean(&value.into()), style)
 }
-fn panel(theme: Theme, title: String, focus: bool) -> Block<'static> {
+fn panel(theme: Theme, title: &str) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(theme.border(false))
-        .title(Line::from(span(
-            format!(" {title} "),
-            if focus {
-                theme.accent().bold()
-            } else {
-                theme.base()
-            },
-        )))
+        .title(Line::from(span(format!(" {title} "), theme.base().bold())))
         .padding(Padding::horizontal(1))
         .style(theme.base())
 }
-fn section(
+/// The same frame and spacing are used by every modal selector and form.
+pub(super) fn modal(
     frame: &mut Frame,
     area: Rect,
     theme: Theme,
     title: &str,
-    detail: &str,
-    focused: bool,
-    separator: bool,
-) -> Rect {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .border_style(theme.border(false))
-        .style(theme.base());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.height == 0 || inner.width < 2 {
-        return Rect::new(inner.x, inner.y, 0, 0);
-    }
-    let header = Rect::new(inner.x, inner.y, inner.width, 1);
-    frame.render_widget(Block::default().style(theme.surface()), header);
-    let detail = text::truncate(
-        &text::clean(detail),
-        inner.width.saturating_sub(16) as usize,
-    );
-    let detail_width = text::width(&detail) as u16;
-    let title_width = inner.width.saturating_sub(detail_width + 3);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            span(
-                if focused { "▎" } else { " " },
-                theme.accent().bg(theme.surface().bg.unwrap()),
-            ),
-            span(
-                text::truncate(&text::clean(title), title_width.saturating_sub(1) as usize),
-                theme.surface().bold(),
-            ),
-        ])),
-        header,
-    );
-    if detail_width > 0 {
-        frame.render_widget(
-            Paragraph::new(span(
-                detail,
-                theme
-                    .muted()
-                    .patch(Style::new().bg(theme.surface().bg.unwrap())),
-            )),
-            Rect::new(inner.right() - detail_width - 1, inner.y, detail_width, 1),
-        );
-    }
-    if separator && inner.height >= 3 {
-        frame.render_widget(
-            Paragraph::new("─".repeat(inner.width as usize)).style(theme.border(false)),
-            Rect::new(inner.x, inner.y + 1, inner.width, 1),
-        );
-        for (x, symbol) in [(area.x, "├"), (area.right() - 1, "┤")] {
-            frame.buffer_mut()[(x, inner.y + 1)]
-                .set_symbol(symbol)
-                .set_style(theme.border(false));
-        }
-        Rect::new(
-            inner.x + 1,
-            inner.y + 2,
-            inner.width.saturating_sub(2),
-            inner.height - 2,
-        )
-    } else {
-        Rect::new(
-            inner.x + 1,
-            inner.y + 1,
-            inner.width.saturating_sub(2),
-            inner.height - 1,
-        )
-    }
-}
-#[derive(Clone, Copy)]
-pub struct Geometry {
-    pub tree: Option<Rect>,
-    pub content: Rect,
-    pub input: Rect,
-    pub narrow_tree: bool,
-}
-pub fn geometry(area: Rect, ui: &Ui) -> Geometry {
-    let body = Rect::new(
-        area.x,
-        area.y + 1,
-        area.width,
-        area.height.saturating_sub(2),
-    );
-    let tree_focus = ui.focus == Focus::Tree || (ui.focus == Focus::Search && ui.search_tree);
-    let visible = ui.sidebar && (area.width >= 88 || tree_focus && area.width >= 64);
-    let tree_width: u16 = if visible {
-        if area.width >= 100 {
-            (area.width / 4).clamp(28, 40)
-        } else {
-            24
-        }
-    } else {
-        0
-    };
-    // Adjacent panels share one border cell instead of drawing separate boxes.
-    let right_offset = tree_width.saturating_sub(u16::from(visible));
-    let right = Rect::new(
-        body.x + right_offset,
-        body.y,
-        body.width.saturating_sub(right_offset),
-        body.height,
-    );
-    let (rows, _) = ui
-        .editor
-        .layout(right.width.saturating_sub(10).max(1) as usize);
-    let wanted = if area.height >= 24 { 8 } else { 6 };
-    let input_height =
-        (wanted + u16::from(ui.reference.is_some()) + rows.len().saturating_sub(2).min(3) as u16)
-            .min(body.height.saturating_sub(4))
-            .max(5)
-            .min(body.height);
-    Geometry {
-        tree: visible.then_some(Rect::new(body.x, body.y, tree_width, body.height)),
-        content: Rect::new(
-            right.x,
-            right.y,
-            right.width,
-            right.height.saturating_sub(input_height) + 1,
-        ),
-        input: Rect::new(
-            right.x,
-            right.bottom() - input_height,
-            right.width,
-            input_height,
-        ),
-        narrow_tree: !visible && tree_focus,
-    }
-}
-pub fn draw(frame: &mut Frame, ui: &mut Ui) {
-    let area = frame.area();
-    let theme = ui.theme;
-    frame.render_widget(Block::default().style(theme.base()), area);
-    if area.width < 24 || area.height < 9 {
-        frame.render_widget(
-            Paragraph::new("请扩大终端\nCtrl+Q 退出").style(theme.base()),
-            area,
-        );
-        return;
-    }
-    let g = geometry(area, ui);
-    let header = Line::from(vec![
-        span(" ▤ ", theme.accent()),
-        span("Lumen", theme.base().bold()),
-        span("  /  ", theme.border(false)),
-        span(
-            text::truncate(
-                &text::clean(&ui.workspace_name),
-                area.width
-                    .saturating_sub(if area.width >= 72 { 52 } else { 14 })
-                    as usize,
-            ),
-            theme.muted(),
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(header),
-        Rect::new(area.x, area.y, area.width, 1),
-    );
-    if area.width >= 72 {
-        let status = if ui.busy {
-            "生成中"
-        } else if ui.model == "mock" {
-            "演示模式"
-        } else {
-            "就绪"
-        };
-        let status = format!(
-            "{}  ·  {status}",
-            text::truncate(&text::clean(&ui.model), 22)
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(span(status, theme.muted())).right_aligned()),
-            Rect::new(area.right() - 38, area.y, 36, 1),
-        );
-    }
-    if let Some(tree) = g.tree {
-        directory(frame, ui, tree);
-    }
-    if g.narrow_tree {
-        directory(frame, ui, g.content);
-    } else {
-        content(frame, ui, g.content);
-    }
-    composer(frame, ui, g.input);
-    dividers(frame, g, theme);
-    completions(frame, ui, g.content);
-    if ui.session_panel {
-        session_panel(frame, ui, area);
-    }
-    let focus = match ui.focus {
-        Focus::Tree => "目录",
-        Focus::Content => "内容",
-        Focus::Input => "输入",
-        Focus::Search => "查找",
-    };
-    let status = if let Some(notice) = &ui.notice {
-        notice.clone()
-    } else if ui.view == View::Read && ui.unread > 0 {
-        format!("有 {} 条新回复 · /chat 查看", ui.unread)
-    } else {
-        if ui.focus == Focus::Input {
-            "Enter 发送  Ctrl+J 换行  ·  F1 目录  F2 阅读  F3 对话  ·  F6 切换  Ctrl+Q 退出".into()
-        } else if ui.focus == Focus::Search {
-            "Enter 确认  Esc 清除  ·  F6 切换  Ctrl+Q 退出".into()
-        } else {
-            format!("{focus}  ·  i 输入  F6 切换  ·  F1 目录  F2 阅读  F3 对话  Ctrl+Q 退出")
-        }
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(span(
-            text::truncate(&status, area.width.saturating_sub(2) as usize),
-            if ui.error && ui.notice.is_some() {
-                theme.error()
-            } else {
-                theme.muted()
-            },
-        ))),
-        Rect::new(
-            area.x + 1,
-            area.bottom() - 1,
-            area.width.saturating_sub(2),
-            1,
-        ),
-    );
-    if let Some(dialog) = &ui.provider_dialog {
-        super::provider_setup::draw(frame, dialog, ui.theme, area);
-    }
-}
-fn session_panel(frame: &mut Frame, ui: &Ui, area: Rect) {
-    let width = area.width.saturating_sub(4).min(100);
-    let height = area.height.saturating_sub(4).min(20);
-    if width < 10 || height < 4 {
-        return;
+    width: u16,
+    height: u16,
+) -> Option<Rect> {
+    let width = width.min(area.width.saturating_sub(2));
+    let height = height.min(area.height.saturating_sub(2));
+    if width < 12 || height < 5 {
+        return None;
     }
     let rect = Rect::new(
         area.x + (area.width - width) / 2,
@@ -279,13 +45,354 @@ fn session_panel(frame: &mut Frame, ui: &Ui, area: Rect) {
         height,
     );
     let block = panel(
-        ui.theme,
-        "会话 · 输入过滤 · Enter 打开 · PgDn 下一页 · Esc 返回".into(),
-        true,
+        theme,
+        &text::truncate(title, width.saturating_sub(6) as usize),
     );
     let inner = block.inner(rect);
     frame.render_widget(Clear, rect);
     frame.render_widget(block, rect);
+    Some(inner)
+}
+pub(super) fn filter_input(
+    frame: &mut Frame,
+    area: Rect,
+    value: &str,
+    cursor: usize,
+    theme: Theme,
+) {
+    let mut editor = super::input::Editor::default();
+    editor.set(value.into());
+    editor.cursor = cursor;
+    let prefix = "搜索  ";
+    let prefix_width = text::width(prefix) as u16;
+    let (lines, (x, y)) =
+        editor.layout(area.width.saturating_sub(prefix_width + 1).max(1) as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            span(prefix, theme.muted()),
+            span(lines.get(y).cloned().unwrap_or_default(), theme.base()),
+        ])),
+        area,
+    );
+    frame.set_cursor_position((
+        area.x + (prefix_width + x as u16).min(area.width.saturating_sub(1)),
+        area.y,
+    ));
+}
+fn section(
+    frame: &mut Frame,
+    area: Rect,
+    theme: Theme,
+    title: &str,
+    detail: &str,
+    focused: bool,
+) -> Rect {
+    let inner = Rect::new(
+        area.x + 1,
+        area.y,
+        area.width.saturating_sub(2),
+        area.height,
+    );
+    if inner.height == 0 || inner.width == 0 {
+        return inner;
+    }
+    let detail = if inner.width >= 16 {
+        text::truncate(&text::clean(detail), inner.width as usize / 3)
+    } else {
+        String::new()
+    };
+    let detail_width = text::width(&detail) as u16;
+    let title_width = inner.width.saturating_sub(if detail_width > 0 {
+        detail_width + 2
+    } else {
+        0
+    });
+    frame.render_widget(
+        Paragraph::new(span(
+            text::truncate(title, title_width as usize),
+            if focused {
+                theme.accent().bold()
+            } else {
+                theme.base().bold()
+            },
+        )),
+        Rect::new(inner.x, inner.y, title_width, 1),
+    );
+    if detail_width > 0 {
+        frame.render_widget(
+            Paragraph::new(span(detail, theme.muted())),
+            Rect::new(inner.right() - detail_width, inner.y, detail_width, 1),
+        );
+    }
+    let offset = inner.height.min(2);
+    Rect::new(
+        inner.x,
+        inner.y + offset,
+        inner.width,
+        inner.height - offset,
+    )
+}
+#[derive(Clone, Copy)]
+pub struct Geometry {
+    pub header: Rect,
+    pub footer: Rect,
+    pub body: Rect,
+    pub tree: Rect,
+    pub content: Rect,
+    pub input: Rect,
+}
+fn editor_width(width: u16) -> usize {
+    width.saturating_sub(7).max(1) as usize
+}
+pub fn geometry(area: Rect, ui: &Ui) -> Geometry {
+    let inner = Rect::new(
+        area.x + 1,
+        area.y + 1,
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let header = Rect::new(inner.x, inner.y, inner.width, inner.height.min(1));
+    let footer = Rect::new(
+        inner.x,
+        inner.bottom().saturating_sub(1),
+        inner.width,
+        inner.height.min(1),
+    );
+    let body = Rect::new(
+        inner.x,
+        inner.y + inner.height.min(2),
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    let tree_width = ((u32::from(area.width) * 23 / 100) as u16)
+        .clamp(24, 34)
+        .min(body.width / 3)
+        .min(body.width.saturating_sub(16));
+    let right = Rect::new(
+        body.x + tree_width,
+        body.y,
+        body.width.saturating_sub(tree_width),
+        body.height,
+    );
+    let editor = if ui.focus == Focus::Search {
+        &ui.search
+    } else {
+        &ui.editor
+    };
+    let (rows, _) = editor.layout(editor_width(right.width));
+    let input_height = (3 + rows.len().clamp(1, 5) as u16 + u16::from(ui.reference.is_some()))
+        .min(body.height.saturating_sub(3))
+        .max(if body.height < 5 { 2 } else { 3 })
+        .min(body.height);
+    Geometry {
+        header,
+        footer,
+        body,
+        tree: Rect::new(body.x, body.y, tree_width, body.height),
+        content: Rect::new(
+            right.x,
+            right.y,
+            right.width,
+            right.height.saturating_sub(input_height),
+        ),
+        input: Rect::new(
+            right.x,
+            right.bottom() - input_height,
+            right.width,
+            input_height,
+        ),
+    }
+}
+fn horizontal(frame: &mut Frame, theme: Theme, x: u16, y: u16, width: u16) {
+    frame.render_widget(
+        Paragraph::new(span("─".repeat(width as usize), theme.border(false))),
+        Rect::new(x, y, width, 1),
+    );
+}
+fn junction(frame: &mut Frame, theme: Theme, x: u16, y: u16, symbol: &str) {
+    if frame.area().contains((x, y).into()) {
+        frame.buffer_mut()[(x, y)]
+            .set_symbol(symbol)
+            .set_style(theme.border(false));
+    }
+}
+pub fn draw(frame: &mut Frame, ui: &mut Ui) {
+    let area = frame.area();
+    let theme = ui.theme;
+    ui.latest_button = None;
+    frame.render_widget(Block::default().style(theme.base()), area);
+    if area.width < 24 || area.height < 9 {
+        frame.render_widget(
+            Paragraph::new("请扩大终端\nCtrl+Q 退出").style(theme.base()),
+            area,
+        );
+        return;
+    }
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Plain)
+            .style(theme.base())
+            .border_style(theme.border(false)),
+        area,
+    );
+    let g = geometry(area, ui);
+    header(frame, ui, g.header);
+    horizontal(frame, theme, g.body.x, g.header.bottom(), g.body.width);
+    horizontal(frame, theme, g.body.x, g.footer.y - 1, g.body.width);
+    for y in [g.header.bottom(), g.footer.y - 1] {
+        junction(frame, theme, area.x, y, "├");
+        junction(frame, theme, area.right() - 1, y, "┤");
+    }
+    directory(frame, ui, g.tree);
+    content(frame, ui, g.content);
+    composer(frame, ui, g.input);
+    let tree = g.tree;
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(theme.border(false)),
+        tree,
+    );
+    junction(frame, theme, tree.right() - 1, g.header.bottom(), "┬");
+    junction(frame, theme, tree.right() - 1, g.footer.y - 1, "┴");
+    let left = g.content.x - 1;
+    if g.content.height >= 2 {
+        junction(frame, theme, left, g.content.y + 1, "├");
+        junction(frame, theme, area.right() - 1, g.content.y + 1, "┤");
+    }
+    if g.input.height > 0 {
+        junction(frame, theme, left, g.input.y, "├");
+        junction(frame, theme, area.right() - 1, g.input.y, "┤");
+    }
+    completions(frame, ui, g);
+    footer(frame, ui, g.footer);
+    if ui.session_panel {
+        session_panel(frame, ui, area);
+    }
+    if let Some(dialog) = &ui.provider_dialog {
+        super::provider_setup::draw(frame, dialog, ui.theme, area);
+    }
+}
+fn header(frame: &mut Frame, ui: &Ui, area: Rect) {
+    let theme = ui.theme;
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            span(" Lumen", theme.base().bold()),
+            span(format!("  v{}", env!("CARGO_PKG_VERSION")), theme.muted()),
+        ])),
+        area,
+    );
+    let scope = if ui.workspace_path.is_some() {
+        &ui.workspace_name
+    } else {
+        "独立会话"
+    };
+    if area.width >= 76 {
+        let segment = area.width / 3;
+        frame.render_widget(
+            Paragraph::new(span(
+                text::truncate(scope, segment.saturating_sub(2) as usize),
+                theme.muted(),
+            ))
+            .centered(),
+            Rect::new(area.x + segment, area.y, segment, 1),
+        );
+        let title = if ui.session_title.is_empty() {
+            "新会话"
+        } else {
+            &ui.session_title
+        };
+        frame.render_widget(
+            Paragraph::new(span(
+                text::truncate(title, segment.saturating_sub(2) as usize),
+                theme.base(),
+            ))
+            .right_aligned(),
+            Rect::new(area.right() - segment, area.y, segment - 1, 1),
+        );
+    } else if area.width >= 42 {
+        frame.render_widget(
+            Paragraph::new(span(
+                text::truncate(scope, area.width.saturating_sub(23) as usize),
+                theme.muted(),
+            ))
+            .right_aligned(),
+            Rect::new(area.x + 22, area.y, area.width - 23, 1),
+        );
+    }
+}
+fn footer(frame: &mut Frame, ui: &Ui, row: Rect) {
+    let theme = ui.theme;
+    let row = Rect::new(row.x + 1, row.y, row.width.saturating_sub(2), row.height);
+    let state = if let Some(notice) = &ui.notice {
+        notice.clone()
+    } else if ui.history_loading {
+        "加载更早对话…".into()
+    } else if ui.busy {
+        format!(
+            "{} · Ctrl+C 停止",
+            if ui.activity.is_empty() {
+                "处理中…"
+            } else {
+                &ui.activity
+            }
+        )
+    } else if ui.view == View::Read && ui.unread > 0 {
+        format!("{} 条新回复 · F1 查看", ui.unread)
+    } else if ui.model == "mock" {
+        "演示模式".into()
+    } else {
+        "就绪".into()
+    };
+    let model = text::truncate(&text::clean(&ui.model), row.width as usize / 3);
+    let model_width = text::width(&model) as u16;
+    let state = text::truncate(&state, row.width.saturating_sub(model_width + 2) as usize);
+    let state_width = text::width(&state) as u16;
+    frame.render_widget(
+        Paragraph::new(span(
+            state,
+            if ui.error && ui.notice.is_some() {
+                theme.error()
+            } else {
+                theme.muted()
+            },
+        )),
+        row,
+    );
+    frame.render_widget(
+        Paragraph::new(span(model, theme.muted())).right_aligned(),
+        Rect::new(row.right() - model_width, row.y, model_width, 1),
+    );
+    if ui.notice.is_none() && !ui.busy && ui.provider_dialog.is_none() && !ui.session_panel {
+        let hint = if ui.focus == Focus::Search {
+            "Enter 确认 · Esc 返回 · / 命令"
+        } else if !ui.candidates().is_empty() {
+            if ui.editor.token().1.starts_with('@') {
+                "↑↓ 选择 · Enter/Tab 引用 · Esc 取消"
+            } else {
+                "↑↓ 选择 · Enter 执行 · Tab 补全"
+            }
+        } else if ui.focus == Focus::Tree {
+            "↑↓ 选择 · Enter 打开 · f 筛选 · / 命令"
+        } else if ui.focus == Focus::Content && ui.view == View::Read {
+            "a 引用 · f 查找 · / 命令"
+        } else {
+            "F1 会话 · F2 阅读 · Ctrl+B 目录 · / 命令"
+        };
+        let available = row.width.saturating_sub(state_width + model_width + 4);
+        if text::width(hint) <= available as usize {
+            frame.render_widget(
+                Paragraph::new(span(hint, theme.muted())).centered(),
+                Rect::new(row.x + state_width + 2, row.y, available, 1),
+            );
+        }
+    }
+}
+fn session_panel(frame: &mut Frame, ui: &Ui, area: Rect) {
+    let Some(inner) = modal(frame, area, ui.theme, "会话", 88, 20) else {
+        return;
+    };
     let filtered: Vec<_> = ui
         .session_choices
         .iter()
@@ -297,112 +404,110 @@ fn session_panel(frame: &mut Frame, ui: &Ui, area: Rect) {
                 || info.identity.session_id.contains(&ui.session_filter)
         })
         .collect();
-    let visible = inner.height.saturating_sub(1) as usize;
+    let count = filtered.len();
+    let mut lines = vec![Line::default(), Line::default()];
+    let visible = inner.height.saturating_sub(3) as usize / 2;
     let start = ui.session_choice.saturating_sub(visible.saturating_sub(1));
-    let mut lines = vec![Line::from(span(
-        format!("过滤: {}", ui.session_filter),
-        ui.theme.accent(),
-    ))];
     for (index, info) in filtered.iter().enumerate().skip(start).take(visible) {
+        let selected = index == ui.session_choice;
+        let style = if selected {
+            ui.theme.selected()
+        } else {
+            ui.theme.base()
+        };
+        let health = match info.health {
+            crate::session::SessionHealth::Complete => "",
+            crate::session::SessionHealth::Interrupted => "上次运行中断 · ",
+            crate::session::SessionHealth::Corrupt => "记录损坏 · 只读 · ",
+            crate::session::SessionHealth::Diverged => "记录分叉 · 只读 · ",
+            crate::session::SessionHealth::Unsupported => "版本不兼容 · 只读 · ",
+        };
+        lines.push(
+            Line::from(span(
+                text::truncate(
+                    &format!(
+                        "{} {}{}",
+                        if selected { "›" } else { " " },
+                        info.metadata.title,
+                        if info.metadata.archived {
+                            " · 已归档"
+                        } else {
+                            ""
+                        }
+                    ),
+                    inner.width as usize,
+                ),
+                style,
+            ))
+            .style(style),
+        );
         lines.push(Line::from(span(
-            format!(
-                "{} {}{} · {} · {:?} · {} · {}",
-                if index == ui.session_choice {
-                    "›"
-                } else {
-                    " "
-                },
-                info.metadata.title,
-                if info.metadata.archived {
-                    " [已归档]"
-                } else {
-                    ""
-                },
-                info.metadata.model.model,
-                info.health,
-                info.updated_at,
-                info.identity
-                    .session_id
-                    .chars()
-                    .rev()
-                    .take(8)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect::<String>()
+            text::truncate(
+                &format!(
+                    "  {health}{} · {}",
+                    text::truncate(&info.metadata.model.model, inner.width as usize / 3),
+                    info.updated_at
+                ),
+                inner.width as usize,
             ),
-            if index == ui.session_choice {
-                ui.theme.accent()
-            } else {
-                ui.theme.base()
-            },
+            ui.theme.muted(),
         )));
     }
+    if count == 0 {
+        lines.push(Line::from(span("没有匹配的会话", ui.theme.muted())));
+    }
     frame.render_widget(Paragraph::new(lines), inner);
-}
-fn dividers(frame: &mut Frame, g: Geometry, theme: Theme) {
-    // Restore junctions after the overlapping panel borders have been drawn.
-    let x = g.content.x;
-    let y = g.input.y;
-    let mut junctions = vec![(x, y, "├"), (g.content.right() - 1, y, "┤")];
-    if g.tree.is_some() {
-        junctions.extend([(x, g.content.y, "┬"), (x, g.input.bottom() - 1, "┴")]);
-        if g.content.height >= 5 {
-            junctions.push((x, g.content.y + 2, "┼"));
-        }
-    }
-    for (x, y, symbol) in junctions {
-        frame.buffer_mut()[(x, y)]
-            .set_symbol(symbol)
-            .set_style(theme.border(false));
-    }
+    let hint = if ui.session_next.is_some() {
+        "↑↓ 选择 · Enter 打开 · PgDn 下一页 · Esc 返回"
+    } else {
+        "↑↓ 选择 · Enter 打开 · Esc 返回"
+    };
+    frame.render_widget(
+        Paragraph::new(span(
+            text::truncate(hint, inner.width as usize),
+            ui.theme.muted(),
+        )),
+        Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
+    );
+    filter_input(
+        frame,
+        Rect::new(inner.x, inner.y, inner.width, 1),
+        &ui.session_filter,
+        ui.session_filter.len(),
+        ui.theme,
+    );
 }
 fn directory(frame: &mut Frame, ui: &mut Ui, area: Rect) {
     let theme = ui.theme;
-    let mut inner = section(
+    let inner = section(
         frame,
         area,
         theme,
-        "知识目录",
-        if ui.tree.filter.is_empty() {
-            "/ 搜索"
+        if area.width < 12 {
+            "目录"
         } else {
-            "筛选中"
+            "知识目录"
+        },
+        &if ui.tree.filter.is_empty() {
+            format!("{} 项", ui.tree.objects.len())
+        } else {
+            "筛选中".into()
         },
         ui.focus == Focus::Tree || ui.focus == Focus::Search && ui.search_tree,
-        true,
     );
     if inner.width == 0 || inner.height == 0 {
         return;
-    }
-    if inner.height >= 12 {
-        let summary_y = inner.bottom() - 3;
-        frame.render_widget(
-            Paragraph::new("─".repeat(inner.width as usize)).style(theme.border(false)),
-            Rect::new(inner.x, summary_y, inner.width, 1),
-        );
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(span(
-                    format!("{} 项知识", ui.tree.objects.len()),
-                    theme.muted(),
-                )),
-                Line::from(span("Enter 打开 · / 筛选", theme.muted())),
-            ]),
-            Rect::new(inner.x, summary_y + 1, inner.width, 2),
-        );
-        inner.height -= 4;
     }
     let rows = ui.tree.rows();
     if rows.is_empty() {
         let value = if ui.loading {
             "正在读取…"
         } else if ui.workspace_path.is_none() {
-            "暂无知识库\n\n打开后在此浏览目录"
+            "目录需要工作区\n\n/workspace open <路径>"
         } else if ui.tree.objects.is_empty() {
-            "工作区暂无知识\n\n导入 Markdown 后\n按 F1 刷新目录"
+            "工作区暂无知识"
         } else {
-            "没有匹配项\n按 / 重新筛选\nEsc 清除筛选"
+            "没有匹配项"
         };
         frame.render_widget(Paragraph::new(value).style(theme.muted()), inner);
         return;
@@ -440,30 +545,77 @@ fn directory(frame: &mut Frame, ui: &mut Ui, area: Rect) {
             } else {
                 theme.base()
             };
-            Line::from(vec![
-                span(prefix, style),
-                span(
-                    if matches!(
-                        object.kind,
-                        crate::knowledge::ObjectKind::Domain | crate::knowledge::ObjectKind::Topic
-                    ) {
-                        "▱ "
-                    } else {
-                        "· "
-                    },
-                    style,
-                ),
-                span(title, style),
-            ])
-            .style(style)
+            Line::from(vec![span(prefix, style), span(title, style)]).style(style)
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), inner);
 }
+fn content_header(frame: &mut Frame, ui: &Ui, area: Rect, title: &str, detail: &str) -> Rect {
+    if area.width < 5 || area.height < 2 {
+        return Rect::new(area.x, area.y, 0, 0);
+    }
+    let theme = ui.theme;
+    let tab = |view| {
+        if ui.view == view {
+            theme.accent().bold().add_modifier(Modifier::UNDERLINED)
+        } else {
+            theme.muted()
+        }
+    };
+    let tabs = Line::from(vec![
+        span(" 会话 ", tab(View::Chat)),
+        span("│", theme.border(false)),
+        span(" 阅读 ", tab(View::Read)),
+        span("│", theme.border(false)),
+    ]);
+    let tabs_width = tabs.width() as u16;
+    frame.render_widget(
+        Paragraph::new(tabs),
+        Rect::new(area.x + 1, area.y, area.width.saturating_sub(2), 1),
+    );
+    let available = area.width.saturating_sub(tabs_width + 4);
+    let detail = if ui.view == View::Read && ui.unread > 0 && available > 30 {
+        text::truncate(detail, available as usize / 3)
+    } else {
+        String::new()
+    };
+    let detail_width = text::width(&detail) as u16;
+    let title_width = available.saturating_sub(if detail_width > 0 {
+        detail_width + 2
+    } else {
+        0
+    });
+    frame.render_widget(
+        Paragraph::new(span(
+            text::truncate(title, title_width as usize),
+            theme.base().bold(),
+        )),
+        Rect::new(area.x + tabs_width + 2, area.y, title_width, 1),
+    );
+    if detail_width > 0 {
+        frame.render_widget(
+            Paragraph::new(span(detail, theme.muted())),
+            Rect::new(area.right() - detail_width - 1, area.y, detail_width, 1),
+        );
+    }
+    horizontal(frame, theme, area.x, area.y + 1, area.width);
+    Rect::new(
+        area.x + 2,
+        area.y + 2,
+        area.width.saturating_sub(4),
+        area.height - 2,
+    )
+}
 fn content(frame: &mut Frame, ui: &mut Ui, area: Rect) {
     let theme = ui.theme;
     let title = match ui.view {
-        View::Chat => "对话 / 当前会话".into(),
+        View::Chat => {
+            if ui.session_title.is_empty() {
+                "新会话".into()
+            } else {
+                text::clean(&ui.session_title)
+            }
+        }
         View::Read => ui
             .document
             .as_ref()
@@ -478,7 +630,7 @@ fn content(frame: &mut Frame, ui: &mut Ui, area: Rect) {
                 titles.push(text::clean(&d.object.metadata.title));
                 titles.join(" / ")
             })
-            .unwrap_or_else(|| "阅读 / 选择一篇知识".into()),
+            .unwrap_or_else(|| "阅读".into()),
     };
     let detail = if ui.view == View::Read && ui.unread > 0 {
         format!("新回复 {} · /chat", ui.unread)
@@ -487,15 +639,7 @@ fn content(frame: &mut Frame, ui: &mut Ui, area: Rect) {
     } else {
         format!("{} 条消息", ui.messages.len())
     };
-    let inner = section(
-        frame,
-        area,
-        theme,
-        &title,
-        &detail,
-        ui.focus == Focus::Content || ui.focus == Focus::Search && !ui.search_tree,
-        true,
-    );
+    let inner = content_header(frame, ui, area, &title, &detail);
     ui.viewport_height = inner.height.max(1) as usize;
     if inner.width == 0 || inner.height == 0 {
         return;
@@ -566,10 +710,27 @@ fn content(frame: &mut Frame, ui: &mut Ui, area: Rect) {
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
     }
+    if ui.view == View::Chat
+        && !ui.follow
+        && offset < max
+        && ui.provider_dialog.is_none()
+        && !ui.session_panel
+    {
+        let label = " ↓ 回到最新 ";
+        let width = text::width(label) as u16;
+        if inner.width >= width && inner.height > 0 {
+            let button = Rect::new(inner.right() - width, inner.bottom() - 1, width, 1);
+            frame.render_widget(Paragraph::new(span(label, theme.selected())), button);
+            ui.latest_button = Some(button);
+        }
+    }
 }
 fn reading(ui: &mut Ui, width: usize) -> Vec<Line<'static>> {
     let Some(doc) = &mut ui.document else {
-        return markdown::render("在左侧选择知识并按 Enter 打开。\n\n也可以输入 `/open <标题或 ID>`。\n\n`/chat` 显示会话，`/read` 返回文档。",width,ui.theme).lines;
+        return text::wrap(
+            Line::from(span("未打开文档 · /open <标题或 ID>", ui.theme.muted())),
+            width,
+        );
     };
     let key = (width, ui.theme);
     if doc.render_key != Some(key) {
@@ -608,31 +769,50 @@ fn conversation(ui: &mut Ui, width: usize) -> Vec<Line<'static>> {
     ui.chat_links.clear();
     if ui.messages.is_empty() {
         ui.chat_link = None;
-        let welcome = if ui.workspace_path.is_none() {
-            "# 让知识彼此连接\n\n打开知识库，开始阅读与对话。\n\n**打开已有知识库**\n`/workspace open <路径>`\n\n**创建新的知识库**\n`/workspace init <路径>`\n\n输入 `/help` 查看更多命令。"
-        } else {
-            "# 从一个问题开始\n\n在左侧选择知识阅读，或在下方与 Agent 对话。\n\n`/open <标题>` 打开知识   `/help` 查看命令"
-        };
-        return markdown::render(welcome, width, ui.theme).lines;
+        let mut lines = text::wrap(
+            Line::from(span("输入消息开始对话。", ui.theme.muted())),
+            width,
+        );
+        lines.push(Line::default());
+        lines.extend(text::wrap(
+            Line::from(span(
+                if ui.model == "mock" {
+                    "/login 配置供应商 · /model 选择模型 · /help 帮助"
+                } else {
+                    "/model 选择模型 · /sessions 历史会话 · /help 帮助"
+                },
+                ui.theme.muted(),
+            )),
+            width,
+        ));
+        return lines;
     }
     let mut lines = vec![];
-    for message in &ui.messages {
-        lines.push(Line::from(span(
-            if message.role == "你" {
-                "› 你"
-            } else if message.role == "Lumen" {
-                "✦ Lumen"
-            } else {
-                message.role
-            },
-            if message.role == "错误" {
-                ui.theme.error().bold()
-            } else if message.role == "Lumen" {
-                ui.theme.violet().bold()
-            } else {
-                ui.theme.accent().bold()
-            },
-        )));
+    let prepended = ui.prepended_messages.min(ui.messages.len());
+    let mut added_lines = 0;
+    for (index, message) in ui.messages.iter().enumerate() {
+        if index == prepended {
+            added_lines = lines.len();
+        }
+        let user = message.role == "你";
+        let style = if message.role == "错误" {
+            ui.theme.error()
+        } else if user {
+            ui.theme.surface()
+        } else {
+            ui.theme.base()
+        };
+        lines.push(
+            Line::from(span(
+                if user { "用户" } else { message.role },
+                if message.role == "Lumen" || message.role == "错误" || user {
+                    style.bold()
+                } else {
+                    ui.theme.muted()
+                },
+            ))
+            .style(style),
+        );
         if message.role == "Lumen" {
             let rendered = markdown::render(&message.body, width, ui.theme);
             ui.chat_links
@@ -649,54 +829,79 @@ fn conversation(ui: &mut Ui, width: usize) -> Vec<Line<'static>> {
                         if message.role == "错误" {
                             ui.theme.error()
                         } else {
-                            ui.theme.base()
+                            style
                         },
-                    )),
+                    ))
+                    .style(style),
                     width,
                 ));
             }
         }
         lines.push(Line::default());
     }
+    if prepended > 0 {
+        if !ui.follow {
+            let added_lines = if prepended == ui.messages.len() {
+                lines.len()
+            } else {
+                added_lines
+            };
+            ui.chat_scroll = ui.chat_scroll.saturating_add(added_lines);
+        }
+        ui.prepended_messages = 0;
+    }
     lines
 }
 fn composer(frame: &mut Frame, ui: &mut Ui, area: Rect) {
     let theme = ui.theme;
     let search = ui.focus == Focus::Search;
-    let title = if search {
-        "查找"
+    let focused = ui.focus == Focus::Input || search;
+    let compact = area.height < 4;
+    let title = if search { "查找" } else { "输入" };
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(theme.border(false))
+        .style(theme.base())
+        .padding(Padding::horizontal(2));
+    let block = if compact {
+        block.title(Line::from(span(
+            format!(" {title} "),
+            if focused {
+                theme.accent()
+            } else {
+                theme.muted()
+            },
+        )))
     } else {
-        "✦ Agent · 知识问答"
+        block
     };
-    let detail = if search {
-        "Enter 确认".into()
-    } else if ui.busy {
-        text::clean(&ui.activity)
-    } else if ui.reference.is_some() {
-        "引用 1 · Ctrl+R 移除".into()
-    } else {
-        "@ 引用知识".into()
-    };
-    let body = section(
-        frame,
-        area,
-        theme,
-        title,
-        &detail,
-        search || ui.focus == Focus::Input,
-        false,
-    );
-    if body.width < 3 || body.height == 0 {
+    let mut inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 3 || inner.height == 0 {
         return;
     }
-    let mut edit_area = body;
+    if !compact {
+        frame.render_widget(
+            Paragraph::new(span(
+                title,
+                if focused {
+                    theme.accent()
+                } else {
+                    theme.muted()
+                },
+            )),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+        inner.y += 1;
+        inner.height -= 1;
+    }
     if let Some(reference) = ui
         .reference
         .as_ref()
-        .filter(|_| !search && body.height >= 4)
+        .filter(|_| !search && inner.height >= 2)
     {
         let value = format!(
-            "◇ {}{}",
+            "引用  {}{}",
             reference.title,
             reference
                 .heading
@@ -706,115 +911,113 @@ fn composer(frame: &mut Frame, ui: &mut Ui, area: Rect) {
         );
         frame.render_widget(
             Paragraph::new(span(
-                text::truncate(&text::clean(&value), body.width as usize),
-                theme.violet(),
+                text::truncate(&text::clean(&value), inner.width as usize),
+                theme.muted(),
             )),
-            Rect::new(body.x, body.y, body.width, 1),
+            Rect::new(inner.x, inner.y, inner.width, 1),
         );
-        edit_area.y += 1;
-        edit_area.height -= 1;
+        inner.y += 1;
+        inner.height -= 1;
     }
-    // Keep a little breathing room above a compact, terminal-native input field.
-    if edit_area.height >= 4 {
-        edit_area.y += 1;
-        edit_area.height -= 1;
-    }
-    let inner = if edit_area.height >= 3 {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(theme.border(ui.focus == Focus::Input || search))
-            .padding(Padding::horizontal(1))
-            .style(theme.base());
-        let inner = block.inner(edit_area);
-        frame.render_widget(block, edit_area);
-        inner
-    } else {
-        edit_area
-    };
-    let width = inner.width.saturating_sub(2).max(1) as usize;
+    let width = editor_width(area.width);
     ui.input_width = width;
     let editor = if search { &ui.search } else { &ui.editor };
     let (rows, (x, row)) = editor.layout(width);
     let offset = row.saturating_sub(inner.height.saturating_sub(1) as usize);
-    let mut lines = vec![];
-    for (i, value) in rows
+    let lines = rows
         .iter()
         .enumerate()
         .skip(offset)
         .take(inner.height as usize)
-    {
-        let placeholder = editor.text.is_empty();
-        let value = if placeholder {
-            if search {
-                "输入查找内容…"
-            } else {
-                "向 Agent 提问，或输入 / 命令…"
-            }
-        } else {
-            value
-        };
-        lines.push(Line::from(vec![
-            span(if i == 0 { "› " } else { "  " }, theme.violet()),
-            span(
-                value,
-                if placeholder {
-                    theme.muted()
-                } else {
-                    theme.base()
-                },
-            ),
-        ]));
-    }
+        .map(|(i, value)| {
+            Line::from(vec![
+                span(
+                    if i == 0 { "› " } else { "  " },
+                    if focused {
+                        theme.accent()
+                    } else {
+                        theme.muted()
+                    },
+                ),
+                span(value, theme.base()),
+            ])
+        })
+        .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), inner);
-    // The real caret anchors the IME and follows grapheme-aware visual wrapping.
-    if (ui.focus == Focus::Input || search) && inner.height > 0 {
+    if focused {
         frame.set_cursor_position((
             inner.x + 2 + (x as u16).min(inner.width.saturating_sub(3)),
             inner.y + (row - offset) as u16,
         ));
     }
 }
-fn completions(frame: &mut Frame, ui: &Ui, content: Rect) {
+fn completions(frame: &mut Frame, ui: &Ui, geometry: Geometry) {
     let choices = ui.candidates();
-    if choices.is_empty() || content.height < 4 {
+    // Small windows may need the menu to cover the content header. Keep it
+    // above the editor, inside the right pane, with at least one visible row.
+    let available = geometry.input.y.saturating_sub(frame.area().y + 1);
+    if choices.is_empty() || available < 3 {
         return;
     }
-    let height = (choices.len().min(5) as u16 + 2).min(content.height - 2);
+    let height = (choices.len().min(5) as u16 + 2).min(available);
     let area = Rect::new(
-        content.x + 1,
-        content.bottom() - 1 - height,
-        content.width.saturating_sub(2).min(70),
+        geometry.content.x + 1,
+        geometry.input.y - height,
+        geometry.content.width.saturating_sub(2).min(70),
         height,
     );
     frame.render_widget(Clear, area);
-    let block = panel(ui.theme, "↑↓ 选择 · Enter/Tab 确认".into(), true);
+    let block = panel(
+        ui.theme,
+        if ui.editor.token().1.starts_with('@') {
+            "引用"
+        } else {
+            "命令"
+        },
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let selected = ui.candidate.min(choices.len() - 1);
     let offset = selected.saturating_sub(inner.height.saturating_sub(1) as usize);
+    let label_width = choices
+        .iter()
+        .map(|c| text::width(&c.label))
+        .max()
+        .unwrap_or(0)
+        .min(inner.width.saturating_sub(4) as usize)
+        .min(inner.width as usize * 2 / 3);
     let lines = choices
         .iter()
         .enumerate()
         .skip(offset)
         .take(inner.height as usize)
         .map(|(i, c)| {
-            Line::from(span(
-                text::truncate(
-                    &format!(
-                        "{} {}  {}",
-                        if i == selected { "›" } else { " " },
-                        c.label,
-                        c.hint
-                    ),
-                    inner.width as usize,
+            let style = if i == selected {
+                ui.theme.selected()
+            } else {
+                ui.theme.base()
+            };
+            let label = text::truncate(&c.label, label_width);
+            let padding = " ".repeat(label_width.saturating_sub(text::width(&label)) + 2);
+            let hint = text::truncate(
+                &c.hint,
+                inner.width.saturating_sub(label_width as u16 + 4) as usize,
+            );
+            Line::from(vec![
+                span(
+                    format!("{} {label}{padding}", if i == selected { "›" } else { " " }),
+                    style,
                 ),
-                if i == selected {
-                    ui.theme.selected()
-                } else {
-                    ui.theme.base()
-                },
-            ))
+                span(
+                    hint,
+                    if i == selected {
+                        style
+                    } else {
+                        ui.theme.muted()
+                    },
+                ),
+            ])
+            .style(style)
         })
         .collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines), inner);

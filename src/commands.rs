@@ -12,6 +12,9 @@ pub enum Command {
     },
     Session(SessionCommand),
     Clear,
+    Copy {
+        all: bool,
+    },
     Model(Option<String>),
     Models,
     Providers,
@@ -249,6 +252,9 @@ pub fn parse(input: &str) -> Option<Command> {
             _ => return Some(invalid()),
         }),
         "/clear" => Command::Clear,
+        "/copy" if args.is_empty() || args == ["last"] => Command::Copy { all: false },
+        "/copy" if args == ["all"] => Command::Copy { all: true },
+        "/copy" => invalid(),
         "/model" => Command::Model(rest()),
         "/login" if args.len() <= 1 => Command::Login(args.first().cloned()),
         "/logout" if args.len() <= 1 => Command::Logout(args.first().cloned()),
@@ -491,13 +497,23 @@ pub fn parse(input: &str) -> Option<Command> {
 }
 pub fn help() -> &'static str {
     concat!("/help | /quit | /new | /clear | /model [alias|id] | /models | /providers | /status | /stop\n/context | /compact | /skills | /resume <session-id>\n/sessions [query] | /sessions --cursor <cursor> [query] | /session\n/session rename <title> | archive [id] | unarchive <id> | close | history [before]\n/session inspect <id> | preview <legacy.jsonl> | import <legacy.jsonl>\n/chat | /read [title|id] | /open <title|id> | /knowledge | /theme [auto|light|dark]\n/workspace init <path> | open <path> | clone <url> <path> | config [key value]\n/search <query> | /commit <message> | /sync [message]\n/sync pull | push | fetch | remote [url|none] | conflicts | resolve <path> <file|delete> | continue | abort\n/history [id] | /diff [id] | /restore <id> <commit>\n/index status | refresh | rebuild <all|lexical|relations|learning_state|vectors|summaries>\n/validate\n",
-    "/search [--lexical|--hybrid|--semantic] [--rerank] <query>\n/goal [list] | /goal create <title> [description] | /goal show <title|id>\n/goal set <goal> <title|description|baseline|weekly_minutes|status> <value>\n/plan show <goal> | /plan generate <goal> | /plan add <goal> <minutes> <title> [body]\n/plan move <goal> <unit-id> <position> | /plan remove <goal> <unit-id>\n/plan done <unit-id> [note] | /plan reopen <unit-id> [note]\n/progress <goal> | /study <unit-id> | /answer <unit-id> <answer> | /review <goal> <note>\n/web <query> | /research <query> | /fetch <url> | /import <url> [title]\n/services [reload] | /summary <id> [abstract|overview]\n",
+    "/copy [last|all] 复制最近回复或已加载对话（全屏 TUI）\n/search [--lexical|--hybrid|--semantic] [--rerank] <query>\n/goal [list] | /goal create <title> [description] | /goal show <title|id>\n/goal set <goal> <title|description|baseline|weekly_minutes|status> <value>\n/plan show <goal> | /plan generate <goal> | /plan add <goal> <minutes> <title> [body]\n/plan move <goal> <unit-id> <position> | /plan remove <goal> <unit-id>\n/plan done <unit-id> [note] | /plan reopen <unit-id> [note]\n/progress <goal> | /study <unit-id> | /answer <unit-id> <answer> | /review <goal> <note>\n/web <query> | /research <query> | /fetch <url> | /import <url> [title]\n/services [reload] | /summary <id> [abstract|overview]\n",
     "/login [供应商ID] | /logout [供应商ID]\n/provider add [<名称> [Base URL]] | /provider key <名称>\n/provider models <名称> | /models <名称>\n/provider auth <名称> env <变量名> | /provider auth <名称> none\n/provider model <供应商> <模型ID> <别名> <上下文> <输出上限> [--no-tools]\n",
-    "TUI: F6 切换区域 · F1 目录 · F2 阅读 · F3 对话 · i 输入 · Esc 浏览\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 停止 · Ctrl+Q 退出 · Ctrl+B 目录开关\n阅读: / 查找 · a 引用章节 · v 选区/↑↓ 扩展/a 引用 · Tab 选择链接/Enter 打开\n输入: / 命令 · @ 引用 · ↑↓ 选择/Enter 或 Tab 确认候选 · Ctrl+R 移除引用")
+    "TUI: F6 切换区域 · F1 会话 · F2 阅读 · Ctrl+B 目录 · i 输入 · Esc 浏览\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 停止 · Ctrl+Q 退出\n对话: 滚轮/PgUp/PgDn 翻阅 · 点击回到最新/Ctrl+End 返回底部 · /copy 复制回复\n阅读: f 查找 · a 引用章节 · v 选区/↑↓ 扩展/a 引用 · Tab 选择链接/Enter 打开\n输入: / 命令 · @ 引用 · ↑↓ 选择 · Enter 执行命令或确认引用 · Tab 补全 · Ctrl+R 移除引用")
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn copy_target_is_explicit_and_invalid_arguments_are_rejected() {
+        for command in ["/copy", "/copy last"] {
+            assert_eq!(parse(command), Some(Command::Copy { all: false }));
+        }
+        assert_eq!(parse("/copy all"), Some(Command::Copy { all: true }));
+        for command in ["/copy unknown", "/copy all extra", "/copy last all"] {
+            assert!(matches!(parse(command), Some(Command::Invalid(_))));
+        }
+    }
     #[test]
     fn parses() {
         assert_eq!(parse("/new"), Some(Command::New));

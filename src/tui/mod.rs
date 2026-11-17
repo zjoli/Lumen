@@ -1,4 +1,5 @@
 //! Terminal-native knowledge browser, reader and Agent composer.
+mod clipboard;
 mod input;
 mod markdown;
 mod provider_setup;
@@ -19,7 +20,10 @@ use crate::{
 };
 use crossterm::{
     cursor::SetCursorStyle,
-    event::{DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyEventKind},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+    },
     execute,
 };
 use futures_util::StreamExt;
@@ -44,6 +48,7 @@ impl Drop for RestoreTerminal {
         let _ = execute!(
             io::stdout(),
             DisableBracketedPaste,
+            DisableMouseCapture,
             SetCursorStyle::DefaultUserShape
         );
         ratatui::restore();
@@ -57,6 +62,10 @@ enum ReadPurpose {
     Reference,
 }
 enum Navigation {
+    History {
+        request: HistoryRequest,
+        result: WorkspaceResult<crate::session::HistoryPage>,
+    },
     SessionRead {
         epoch: u64,
         result: WorkspaceResult<CommandOutcome>,
@@ -73,6 +82,13 @@ enum Navigation {
         path: Vec<ObjectId>,
         purpose: ReadPurpose,
     },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryRequest {
+    epoch: u64,
+    identity: crate::session::SessionIdentity,
+    activation: u64,
+    before: String,
 }
 struct Runtime {
     ui: Ui,
@@ -95,6 +111,7 @@ struct Runtime {
     new_session: bool,
     restoring_read: Option<crate::session::ReadingPosition>,
     session_repository: Option<std::sync::Arc<crate::session::SessionRepository>>,
+    history_pending: Option<HistoryRequest>,
 }
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -108,7 +125,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--help" | "-h") => {
-                println!("Lumen · 终端知识工作台\n\n用法: lumen-tui [--workspace <path>] [--theme auto|light|dark] [--plain]\n\nF1 目录 · F2 阅读 · F3 对话 · F6 切换区域\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 停止 · Ctrl+Q 退出\n\n默认继承终端配色和字号，适用于 VS Code 集成终端。");
+                println!("Lumen · 终端知识工作台\n\n用法: lumen-tui [--workspace <path>] [--theme auto|light|dark] [--plain]\n\nF1 会话 · F2 阅读 · Ctrl+B 目录 · F6 切换区域\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 停止 · Ctrl+Q 退出\n\n默认继承终端配色和字号，适用于 VS Code 集成终端。");
                 return Ok(());
             }
             Some("--plain") => plain = true,
@@ -154,6 +171,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     execute!(
         io::stdout(),
         EnableBracketedPaste,
+        EnableMouseCapture,
         SetCursorStyle::SteadyBlock
     )?;
     let mut runtime = Runtime::new(app, theme);
@@ -184,6 +202,7 @@ impl Runtime {
         Self {
             ui,
             session_repository,
+            history_pending: None,
             app: Some(app),
             operation: None,
             cancel: CancellationToken::new(),
@@ -222,6 +241,10 @@ impl Runtime {
         self.ui.session_identity = None;
         self.ui.history_keys.clear();
         self.ui.history_before = None;
+        self.ui.history_loading = false;
+        self.ui.prepended_messages = 0;
+        self.ui.latest_button = None;
+        self.history_pending = None;
         self.ui.tree = tree::Tree::default();
         self.ui.document = None;
         self.ui.reference = None;
@@ -243,7 +266,7 @@ impl Runtime {
                     .to_string_lossy()
                     .into_owned()
             })
-            .unwrap_or_else(|| "未打开工作区".into());
+            .unwrap_or_else(|| "独立会话".into());
         self.ui.view = View::Chat;
         self.reload();
         if let Some(view) = self.app.as_mut().and_then(|app| app.pending_view.take()) {
@@ -316,6 +339,25 @@ impl Runtime {
     }
     fn navigation(&mut self, event: Navigation) {
         match event {
+            Navigation::History { request, result }
+                if self.history_pending.as_ref() == Some(&request) =>
+            {
+                self.history_pending = None;
+                if request.epoch != self.epoch
+                    || self.ui.session_identity.as_ref() != Some(&request.identity)
+                    || self.ui.session_activation != request.activation
+                {
+                    return;
+                }
+                self.ui.history_loading = false;
+                if self.ui.history_before.as_deref() != Some(&request.before) {
+                    return;
+                }
+                match result {
+                    Ok(page) => self.ui.prepend_history(page),
+                    Err(error) => self.ui.notify(format!("加载历史失败：{error}"), true),
+                }
+            }
             Navigation::SessionRead { epoch, result } if epoch == self.epoch => match result {
                 Ok(CommandOutcome::Sessions(page)) => {
                     self.ui.session_next = page.next_cursor;
@@ -411,8 +453,86 @@ impl Runtime {
             _ => (),
         }
     }
+    fn load_history(&mut self, before: String) {
+        let (Some(repo), Some(identity)) = (
+            self.session_repository.clone(),
+            self.ui.session_identity.clone(),
+        ) else {
+            return;
+        };
+        let request = HistoryRequest {
+            epoch: self.epoch,
+            identity,
+            activation: self.ui.session_activation,
+            before,
+        };
+        if self.history_pending.as_ref() == Some(&request) {
+            return;
+        }
+        self.history_pending = Some(request.clone());
+        self.ui.history_loading = true;
+        let tx = self.nav_tx.clone();
+        self.jobs.spawn(async move {
+            let manager = crate::session::SessionManager::new(repo.as_ref().clone());
+            let result = manager
+                .history(&request.identity.session_id, Some(&request.before), 50)
+                .await;
+            let _ = tx.send(Navigation::History { request, result });
+        });
+    }
+    fn mouse(&mut self, event: MouseEvent, area: ratatui::layout::Rect) -> bool {
+        if self.ui.provider_dialog.is_some() || self.ui.session_panel {
+            return false;
+        }
+        let point = (event.column, event.row).into();
+        if !area.contains(point) {
+            return false;
+        }
+        if event.kind == MouseEventKind::Down(MouseButton::Left)
+            && self.ui.view == View::Chat
+            && !self.ui.follow
+            && self
+                .ui
+                .latest_button
+                .is_some_and(|button| button.contains(point))
+        {
+            self.ui.jump_latest();
+            return true;
+        }
+        if event.kind == MouseEventKind::Down(MouseButton::Left) {
+            if render::geometry(area, &self.ui).input.contains(point) {
+                self.ui.focus = Focus::Input;
+                self.ui.completions_hidden = false;
+                return true;
+            }
+            return false;
+        }
+        let delta = match event.kind {
+            MouseEventKind::ScrollUp => -3,
+            MouseEventKind::ScrollDown => 3,
+            _ => return false,
+        };
+        let geometry = render::geometry(area, &self.ui);
+        let focus = if geometry.tree.contains(point) {
+            Focus::Tree
+        } else if geometry.content.contains(point) {
+            Focus::Content
+        } else {
+            return false;
+        };
+        // Scrolling the pane under the pointer must not steal the text editor's focus.
+        let previous = self.ui.focus;
+        self.ui.focus = focus;
+        let action = self.ui.scroll(delta);
+        self.ui.focus = previous;
+        if let Some(action) = action {
+            self.action(action);
+        }
+        true
+    }
     fn action(&mut self, action: Action) {
         match action {
+            Action::LoadHistory(before) => self.load_history(before),
             Action::Provider(request) => {
                 let Some(mut app) = self.app.take() else {
                     self.ui.notify("请等待当前操作结束。", true);
@@ -421,7 +541,16 @@ impl Runtime {
                 app.local_ui = self.ui.session_ui();
                 self.ui.busy = true;
                 self.ui.last_submission = None;
-                self.ui.activity = "正在配置供应商与查询模型…".into();
+                use provider_setup::ProviderAction;
+                self.ui.notice = None;
+                self.ui.activity = match request.as_ref() {
+                    ProviderAction::Refresh(_) => "查询模型列表…",
+                    ProviderAction::Model(_) => "保存模型配置…",
+                    ProviderAction::Select(_) => "切换模型…",
+                    ProviderAction::Logout(_) => "退出供应商认证…",
+                    _ => "保存供应商配置…",
+                }
+                .into();
                 self.cancel = CancellationToken::new();
                 let cancel = self.cancel.clone();
                 self.operation = Some(tokio::spawn(async move {
@@ -482,6 +611,27 @@ impl Runtime {
             return;
         }
         match &command {
+            Some(Command::Copy { all }) => {
+                match self.ui.copy_text(*all) {
+                    Ok(value) => match clipboard::copy(&value) {
+                        Ok(()) => {
+                            self.ui.editor.take();
+                            self.ui.completions_hidden = true;
+                            self.ui.notify(
+                                if *all {
+                                    "已请求终端复制已加载的对话。"
+                                } else {
+                                    "已请求终端复制最近回复。"
+                                },
+                                false,
+                            );
+                        }
+                        Err(error) => self.ui.notify(format!("复制失败: {error}"), true),
+                    },
+                    Err(error) => self.ui.notify(error, true),
+                }
+                return;
+            }
             Some(Command::Provider(crate::commands::ProviderCommand::Add {
                 name: Some(name),
                 base_url,
@@ -561,7 +711,6 @@ impl Runtime {
             }
             Some(Command::Knowledge) => {
                 self.ui.editor.take();
-                self.ui.sidebar = true;
                 self.ui.focus = Focus::Tree;
                 self.reload();
                 return;
@@ -582,6 +731,10 @@ impl Runtime {
                 self.ui.chat_link = None;
                 self.ui.streaming = None;
                 self.ui.chat_scroll = 0;
+                self.ui.prepended_messages = 0;
+                self.ui.jump_latest();
+                self.ui.history_loading = false;
+                self.history_pending = None;
                 self.ui.unread = 0;
                 return;
             }
@@ -795,7 +948,10 @@ impl Runtime {
                             if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) && key.code==crossterm::event::KeyCode::Char('r') { self.reference_request+=1; }
                             if let Some(action)=self.ui.key(key) { self.action(action); }
                         }
-                        Some(Ok(Event::Paste(value))) if !self.quitting=>{ if let Some(dialog)=&mut self.ui.provider_dialog {dialog.paste(&value);} else if self.ui.focus==Focus::Input {self.ui.editor.insert(&value); self.ui.completions_hidden=true;} }
+                        Some(Ok(Event::Paste(value))) if !self.quitting=>self.ui.paste(&value),
+                        Some(Ok(Event::Mouse(mouse))) if !self.quitting=>{
+                            if !self.mouse(mouse, ratatui::layout::Rect::new(0,0,size.width,size.height)) { continue; }
+                        }
                         Some(Ok(_))=>(),Some(Err(e))=>return Err(e.into()),None=>self.action(Action::Quit),
                     }
                     dirty=true;

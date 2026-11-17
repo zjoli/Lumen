@@ -39,6 +39,7 @@ pub struct Message {
     pub body: String,
 }
 pub enum Action {
+    LoadHistory(String),
     Provider(Box<super::provider_setup::ProviderAction>),
     Command(crate::commands::Command),
     Submit(String),
@@ -106,6 +107,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/session import", "导入旧 JSONL 文件"),
     ("/session preview", "只读浏览旧 JSONL"),
     ("/clear", "清空对话显示"),
+    ("/copy", "复制最近一条模型回复"),
+    ("/copy all", "复制当前已加载的对话"),
     ("/model", "搜索并选择可用模型"),
     ("/models", "列出模型别名与能力"),
     ("/providers", "列出供应商连接"),
@@ -147,6 +150,9 @@ pub struct Ui {
     pub session_title: String,
     pub history_before: Option<String>,
     pub history_keys: std::collections::BTreeSet<String>,
+    pub history_loading: bool,
+    pub prepended_messages: usize,
+    pub latest_button: Option<ratatui::layout::Rect>,
     pub session_choices: Vec<crate::session::ManagedSessionInfo>,
     pub session_choice: usize,
     pub session_filter: String,
@@ -157,7 +163,6 @@ pub struct Ui {
     pub focus: Focus,
     pub view: View,
     pub tree: Tree,
-    pub sidebar: bool,
     pub editor: Editor,
     pub search: Editor,
     pub search_tree: bool,
@@ -222,6 +227,9 @@ impl Ui {
         self.session_title.clear();
         self.history_before = None;
         self.history_keys.clear();
+        self.history_loading = false;
+        self.prepended_messages = 0;
+        self.latest_button = None;
         self.messages.clear();
         self.streaming = None;
         self.reference = None;
@@ -285,10 +293,13 @@ impl Ui {
                 });
             }
         }
+        // A duplicate, newer page must not move the oldest-page boundary forward.
+        if !messages.is_empty() || page.before.is_none() {
+            self.history_before = page.before;
+        }
+        self.prepended_messages += messages.len();
         messages.append(&mut self.messages);
         self.messages = messages;
-        self.history_before = page.before;
-        self.follow = false;
     }
     pub fn new(model: String, theme: Theme) -> Self {
         Self {
@@ -298,6 +309,9 @@ impl Ui {
             session_title: String::new(),
             history_before: None,
             history_keys: Default::default(),
+            history_loading: false,
+            prepended_messages: 0,
+            latest_button: None,
             session_choices: vec![],
             session_choice: 0,
             session_filter: String::new(),
@@ -308,7 +322,6 @@ impl Ui {
             focus: Focus::Input,
             view: View::Chat,
             tree: Tree::default(),
-            sidebar: true,
             editor: Editor::default(),
             search: Editor::default(),
             search_tree: false,
@@ -323,7 +336,7 @@ impl Ui {
             chat_links: vec![],
             chat_link: None,
             unread: 0,
-            workspace_name: "未打开工作区".into(),
+            workspace_name: "独立会话".into(),
             workspace_path: None,
             model,
             busy: false,
@@ -344,17 +357,58 @@ impl Ui {
         self.notice = Some(text::clean(&value.into()));
         self.error = error;
     }
+    pub fn copy_text(&self, all: bool) -> Result<String, &'static str> {
+        if all {
+            let text = self
+                .messages
+                .iter()
+                .filter(|message| !message.body.trim().is_empty())
+                .map(|message| format!("{}:\n{}", message.role, message.body))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            if text.is_empty() {
+                Err("当前没有可复制的对话。")
+            } else {
+                Ok(text)
+            }
+        } else {
+            self.messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "Lumen" && !message.body.trim().is_empty())
+                .map(|message| message.body.clone())
+                .ok_or("当前没有可复制的模型回复；可用 /copy all 复制已加载的对话。")
+        }
+    }
+    pub fn paste(&mut self, value: &str) {
+        if let Some(dialog) = &mut self.provider_dialog {
+            dialog.paste(value);
+            return;
+        }
+        if self.session_panel {
+            return;
+        }
+        if value.trim_start().starts_with('/') {
+            self.focus = Focus::Input;
+        }
+        match self.focus {
+            Focus::Input => {
+                self.editor.insert(value);
+                self.completions_hidden = false;
+                self.candidate = 0;
+            }
+            Focus::Search => {
+                self.search.insert(value);
+                self.find(false);
+            }
+            _ => (),
+        }
+    }
     pub fn cycle(&mut self) {
         self.focus = match self.focus {
             Focus::Tree => Focus::Content,
             Focus::Content => Focus::Input,
-            _ => {
-                if self.sidebar {
-                    Focus::Tree
-                } else {
-                    Focus::Content
-                }
-            }
+            _ => Focus::Tree,
         };
         self.completions_hidden = true;
     }
@@ -484,8 +538,8 @@ impl Ui {
                     self.unread += 1;
                 }
             }
-            AgentEvent::AgentStart | AgentEvent::TurnStart => self.activity = "正在思考…".into(),
-            AgentEvent::ContextCompactionStart => self.activity = "正在压缩上下文…".into(),
+            AgentEvent::AgentStart | AgentEvent::TurnStart => self.activity = "思考中…".into(),
+            AgentEvent::ContextCompactionStart => self.activity = "压缩上下文…".into(),
             AgentEvent::ContextPrepared {
                 input_tokens,
                 input_budget,
@@ -497,12 +551,12 @@ impl Ui {
             AgentEvent::ToolCallStart(call) => {
                 self.activity = format!("正在准备工具调用 {}", text::clean(&call.name))
             }
-            AgentEvent::ToolArgumentsDelta { .. } => self.activity = "正在准备工具参数…".into(),
+            AgentEvent::ToolArgumentsDelta { .. } => self.activity = "生成工具参数…".into(),
             AgentEvent::ToolExecutionEnd(result) => {
                 self.activity = if result.is_error {
-                    "正在处理工具错误"
+                    "处理工具错误…"
                 } else {
-                    "正在整理结果"
+                    "整理结果…"
                 }
                 .into()
             }
@@ -519,7 +573,11 @@ impl Ui {
         }
     }
     pub fn candidates(&self) -> Vec<Candidate> {
-        if self.focus != Focus::Input || self.completions_hidden {
+        if self.focus != Focus::Input
+            || self.completions_hidden
+            || self.provider_dialog.is_some()
+            || self.session_panel
+        {
             return vec![];
         }
         if let Some(q) = self.editor.token().1.strip_prefix('@') {
@@ -601,19 +659,63 @@ impl Ui {
             }
         }
     }
-    pub fn scroll(&mut self, delta: isize) {
-        if self.focus == Focus::Tree {
+    fn activate_completion(&mut self) -> Option<Action> {
+        let choices = self.candidates();
+        let choice = choices.get(self.candidate.min(choices.len().saturating_sub(1)))?;
+        match &choice.value {
+            Completion::Object(_) => self.complete(),
+            Completion::Command(command) => {
+                let command = command.clone();
+                let complete = self.editor.text.trim() == command;
+                if !complete {
+                    self.complete();
+                }
+                // Parameterless commands and commands with existing arguments execute
+                // immediately. A required argument must still be supplied by the user.
+                if self.editor.text.trim() == command
+                    && matches!(
+                        crate::commands::parse(&command),
+                        Some(crate::commands::Command::Invalid(_))
+                    )
+                {
+                    if complete {
+                        self.complete();
+                    }
+                    self.notify("请填写命令参数，完成后按 Enter 执行。", false);
+                    return None;
+                }
+                Some(Action::Submit(self.editor.text.clone()))
+            }
+        }
+    }
+    pub fn jump_latest(&mut self) {
+        self.follow = true;
+        self.chat_scroll = self.content_lines.saturating_sub(self.viewport_height);
+        self.chat_link = None;
+        self.latest_button = None;
+    }
+    pub fn scroll(&mut self, delta: isize) -> Option<Action> {
+        if self.focus == Focus::Tree || self.focus == Focus::Search && self.search_tree {
             self.tree.selected = self
                 .tree
                 .selected
                 .saturating_add_signed(delta)
                 .min(self.tree.rows().len().saturating_sub(1));
-            return;
+            return None;
         }
         let max = self.content_lines.saturating_sub(self.viewport_height);
         if self.view == View::Chat {
+            if self.follow {
+                self.chat_scroll = max;
+            }
             self.chat_scroll = self.chat_scroll.saturating_add_signed(delta).min(max);
             self.follow = self.chat_scroll == max;
+            if delta < 0 && self.chat_scroll == 0 {
+                if let Some(before) = &self.history_before {
+                    self.follow = false;
+                    return Some(Action::LoadHistory(before.clone()));
+                }
+            }
         } else if let Some(doc) = &mut self.document {
             if let Some((_, cursor)) = &mut doc.selection {
                 *cursor = cursor
@@ -629,6 +731,7 @@ impl Ui {
                 doc.scroll = doc.scroll.saturating_add_signed(delta).min(max);
             }
         }
+        None
     }
     fn find(&mut self, advance: bool) {
         if self.search_tree {
@@ -741,6 +844,10 @@ impl Ui {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl {
             match key.code {
+                KeyCode::End if self.view == View::Chat && self.focus != Focus::Tree => {
+                    self.jump_latest();
+                    return None;
+                }
                 KeyCode::Char('q') => {
                     if !self.editor.text.is_empty() && !self.quit_armed {
                         self.quit_armed = true;
@@ -758,11 +865,9 @@ impl Ui {
                     }
                 }
                 KeyCode::Char('b') => {
-                    self.sidebar = !self.sidebar;
-                    if !self.sidebar && self.focus == Focus::Tree {
-                        self.focus = Focus::Input;
-                    }
-                    return None;
+                    self.focus = Focus::Tree;
+                    self.completions_hidden = true;
+                    return Some(Action::Reload);
                 }
                 KeyCode::Char('r') => {
                     self.reference = None;
@@ -774,24 +879,21 @@ impl Ui {
         self.quit_armed = false;
         match key.code {
             KeyCode::F(1) => {
-                self.sidebar = true;
-                self.focus = Focus::Tree;
-                return Some(Action::Reload);
+                self.chat();
+                self.focus = Focus::Input;
+                self.completions_hidden = false;
+                return None;
             }
             KeyCode::F(2) => {
                 self.view = View::Read;
                 self.focus = Focus::Content;
-                return None;
-            }
-            KeyCode::F(3) => {
-                self.chat();
-                self.focus = Focus::Content;
+                self.completions_hidden = true;
                 return None;
             }
             KeyCode::BackTab => {
                 self.focus = match self.focus {
                     Focus::Input => Focus::Content,
-                    Focus::Content if self.sidebar => Focus::Tree,
+                    Focus::Content => Focus::Tree,
                     _ => Focus::Input,
                 };
                 self.completions_hidden = true;
@@ -802,18 +904,20 @@ impl Ui {
                 return None;
             }
             KeyCode::PageUp => {
-                if self.view == View::Chat && self.chat_scroll == 0 && !self.busy {
-                    if let Some(cursor) = &self.history_before {
-                        return Some(Action::Command(crate::commands::Command::Session(
-                            crate::commands::SessionCommand::History(Some(cursor.clone())),
-                        )));
-                    }
-                }
-                self.scroll(-(self.viewport_height as isize));
-                return None;
+                return self.scroll(-(self.viewport_height as isize));
             }
             KeyCode::PageDown => {
-                self.scroll(self.viewport_height as isize);
+                return self.scroll(self.viewport_height as isize);
+            }
+            KeyCode::Char('/')
+                if !ctrl
+                    && !key.modifiers.contains(KeyModifiers::ALT)
+                    && self.focus != Focus::Input =>
+            {
+                self.focus = Focus::Input;
+                self.editor.insert("/");
+                self.completions_hidden = false;
+                self.candidate = 0;
                 return None;
             }
             _ => (),
@@ -862,16 +966,7 @@ impl Ui {
                 KeyCode::Tab => self.cycle(),
                 KeyCode::Up if choices > 0 => self.candidate = selected.saturating_sub(1),
                 KeyCode::Down if choices > 0 => self.candidate = (selected + 1).min(choices - 1),
-                KeyCode::Enter
-                    if candidates
-                        .get(selected)
-                        .is_some_and(|choice| match &choice.value {
-                            Completion::Command(command) => self.editor.text.trim() != command,
-                            Completion::Object(_) => true,
-                        }) =>
-                {
-                    return self.complete()
-                }
+                KeyCode::Enter if choices > 0 => return self.activate_completion(),
                 KeyCode::Enter => return Some(Action::Submit(self.editor.text.clone())),
                 KeyCode::Char('j') if ctrl => {
                     self.editor.insert("\n");
@@ -905,15 +1000,21 @@ impl Ui {
                 self.focus = Focus::Input;
                 self.completions_hidden = false;
             }
-            KeyCode::Char('/') if self.focus == Focus::Tree || self.view == View::Read => {
+            KeyCode::Char('f') if self.focus == Focus::Tree || self.view == View::Read => {
                 self.search_tree = self.focus == Focus::Tree;
                 self.search.take();
                 self.focus = Focus::Search;
             }
-            KeyCode::Up | KeyCode::Char('k') => self.scroll(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll(1),
-            KeyCode::Home => self.scroll(isize::MIN / 2),
-            KeyCode::End | KeyCode::Char('G') => self.scroll(isize::MAX / 2),
+            KeyCode::Up | KeyCode::Char('k') => return self.scroll(-1),
+            KeyCode::Down | KeyCode::Char('j') => return self.scroll(1),
+            KeyCode::Home => return self.scroll(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => {
+                if self.view == View::Chat && self.focus != Focus::Tree {
+                    self.jump_latest();
+                } else {
+                    return self.scroll(isize::MAX / 2);
+                }
+            }
             KeyCode::Left | KeyCode::Char('h') if self.focus == Focus::Tree => {
                 self.tree.expand(false)
             }

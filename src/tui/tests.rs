@@ -32,6 +32,7 @@ fn three_regions_and_native_caret_survive_multiline_cjk_and_resizing() {
     ] {
         for theme in [Theme::Auto, Theme::Light, Theme::Dark] {
             let mut ui = Ui::new("mock".into(), theme);
+            ui.workspace_path = Some("/tmp/test-knowledge".into());
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             for input in [
                 String::new(),
@@ -45,33 +46,26 @@ fn three_regions_and_native_caret_survive_multiline_cjk_and_resizing() {
                 let g = render::geometry(terminal.backend().buffer().area, &ui);
                 let caret = terminal.get_cursor_position().unwrap();
                 assert!(g.input.contains(caret), "{width}x{height}: {caret:?}");
-                assert!(caret.y < g.input.bottom() - 1);
-                assert!(screen(&terminal).contains("Agent"));
-                if width >= 88 {
-                    let tree = g.tree.unwrap();
-                    assert_eq!(tree.right() - 1, g.content.x);
-                    assert_eq!(
-                        terminal.backend().buffer()[(g.content.x, g.content.y)].symbol(),
-                        "┬"
-                    );
-                    assert_eq!(
-                        terminal.backend().buffer()[(g.content.x, g.input.bottom() - 1)].symbol(),
-                        "┴"
-                    );
-                }
-                assert_eq!(g.content.bottom() - 1, g.input.y);
-                assert_eq!(
-                    terminal.backend().buffer()[(g.content.x, g.input.y)].symbol(),
-                    "├"
+                assert!(caret.y < g.input.bottom());
+                assert!(screen(&terminal).contains("输入"));
+                let tree = g.tree;
+                assert!(
+                    tree.width > 0,
+                    "directory must remain visible at {width} columns"
                 );
-                assert_eq!(
-                    terminal.backend().buffer()[(g.content.right() - 1, g.input.y)].symbol(),
-                    "┤"
-                );
+                assert_eq!(tree.right(), g.content.x);
+                assert!(!tree.intersects(g.content));
+                assert!(!tree.intersects(g.input));
+                assert_eq!(g.content.bottom(), g.input.y);
+                assert!(!g.content.intersects(g.input));
+                assert_eq!(g.input.bottom(), g.footer.y - 1);
                 if theme == Theme::Auto {
                     for cell in &terminal.backend().buffer().content {
-                        assert!(matches!(cell.bg, Color::Reset | Color::Blue),
-                            "auto must inherit the terminal background outside selection highlights");
+                        assert_eq!(
+                            cell.bg,
+                            Color::Reset,
+                            "auto must inherit the terminal background, including selections"
+                        );
                         assert!(
                             !matches!(cell.fg, Color::Rgb(..)),
                             "auto must use the terminal palette"
@@ -107,7 +101,7 @@ fn tiny_terminal_and_tree_drawer_render_without_panics() {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
         if width >= 24 && height >= 9 {
-            assert!(screen(&terminal).contains("知识目录"));
+            assert!(screen(&terminal).contains("目录"));
         }
     }
 }
@@ -123,35 +117,301 @@ fn input_shortcuts_do_not_trigger_reader_actions_and_completion_is_available() {
     ui.key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(ui.editor.text, "/theme auto ");
     ui.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+    assert_eq!(ui.focus, Focus::Input);
+    assert_eq!(ui.view, View::Chat);
+    ui.key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
     assert_eq!(ui.focus, Focus::Tree);
     assert_eq!(ui.editor.text, "/theme auto ");
 }
 
 #[test]
-fn command_candidates_accept_enter_and_tab_before_submitting_the_completed_command() {
+fn slash_opens_commands_from_chat_and_f1_restores_input_focus() {
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.focus = Focus::Content;
+    ui.completions_hidden = true;
+    ui.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert_eq!(ui.focus, Focus::Input);
+    assert_eq!(ui.editor.text, "/");
+    assert!(!ui.candidates().is_empty());
+
+    for focus in [Focus::Tree, Focus::Content] {
+        ui.view = View::Read;
+        ui.focus = focus;
+        ui.completions_hidden = true;
+        ui.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!(ui.view, View::Chat);
+        assert_eq!(ui.focus, Focus::Input);
+        assert_eq!(ui.editor.text, "/");
+        assert!(!ui.candidates().is_empty());
+    }
+
+    // Commands remain available while browsing the directory or a document.
+    for (focus, view) in [(Focus::Tree, View::Chat), (Focus::Content, View::Read)] {
+        ui.editor.take();
+        ui.focus = focus;
+        ui.view = view;
+        ui.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(ui.focus, Focus::Input);
+        assert_eq!(ui.editor.text, "/");
+        assert!(!ui.candidates().is_empty());
+    }
+}
+
+#[test]
+fn complete_commands_execute_from_browsing_and_search_on_the_first_enter() {
+    for focus in [Focus::Tree, Focus::Content, Focus::Search, Focus::Input] {
+        for command in ["/quit", "/exit", "/chat", "/read", "/theme light"] {
+            let mut rt = Runtime::new(Application::new(), Theme::Auto);
+            rt.ui.focus = focus;
+            rt.ui.view = View::Read;
+            rt.ui.completions_hidden = true;
+            rt.ui.search.set("旧的查找内容".into());
+            for ch in command.chars() {
+                rt.ui
+                    .key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+            }
+            assert_eq!(rt.ui.focus, Focus::Input, "{focus:?}: {command}");
+            assert_eq!(rt.ui.editor.text, command, "{focus:?}: {command}");
+            let action = rt
+                .ui
+                .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                .expect("one Enter must execute a fully typed command");
+            rt.action(action);
+            match command {
+                "/quit" | "/exit" => assert!(rt.quitting),
+                "/chat" => assert_eq!(rt.ui.view, View::Chat),
+                "/read" => assert_eq!(rt.ui.view, View::Read),
+                "/theme light" => assert_eq!(rt.ui.theme, Theme::Light),
+                _ => unreachable!(),
+            }
+            assert!(rt.ui.editor.text.is_empty());
+        }
+    }
+}
+
+#[test]
+fn pasting_a_command_from_browsing_or_search_waits_for_enter_then_executes() {
+    for focus in [Focus::Tree, Focus::Content, Focus::Search, Focus::Input] {
+        let mut rt = Runtime::new(Application::new(), Theme::Auto);
+        rt.ui.focus = focus;
+        rt.ui.view = View::Read;
+        rt.ui.completions_hidden = true;
+        rt.ui.paste("/quit");
+        assert_eq!(rt.ui.focus, Focus::Input);
+        assert_eq!(rt.ui.editor.text, "/quit");
+        assert_eq!(rt.ui.candidates()[0].label, "/quit");
+        assert!(!rt.quitting, "pasting must not execute commands");
+        let action = rt
+            .ui
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        rt.action(action);
+        assert!(rt.quitting);
+    }
+}
+
+#[test]
+fn browse_find_shortcut_filters_without_becoming_a_command_or_losing_the_draft() {
+    for (focus, view) in [(Focus::Tree, View::Chat), (Focus::Content, View::Read)] {
+        let mut ui = Ui::new("mock".into(), Theme::Auto);
+        ui.focus = focus;
+        ui.view = view;
+        ui.editor.set("尚未发送的草稿".into());
+        ui.editor.left();
+        let cursor = ui.editor.cursor;
+        ui.key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert_eq!(ui.focus, Focus::Search);
+        assert_eq!(ui.search_tree, focus == Focus::Tree);
+        ui.key(KeyEvent::new(KeyCode::Char('知'), KeyModifiers::NONE));
+        assert_eq!(ui.search.text, "知");
+        if focus == Focus::Tree {
+            assert_eq!(ui.tree.filter, "知");
+        } else {
+            assert_eq!(ui.reading_query, "知");
+        }
+        ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(ui.focus, focus);
+        ui.key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert_eq!(ui.focus, Focus::Input);
+        assert_eq!(ui.editor.text, "尚未发送的草稿");
+        assert_eq!(ui.editor.cursor, cursor);
+    }
+}
+
+#[test]
+fn slash_menu_keeps_a_visible_choice_above_the_editor_in_short_windows() {
+    for (width, height) in [(24, 9), (40, 12), (60, 14), (100, 30)] {
+        let mut ui = Ui::new("mock".into(), Theme::Auto);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+        let before = terminal.backend().buffer().clone();
+        ui.key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+        let g = render::geometry(before.area, &ui);
+        let rendered = screen(&terminal);
+        assert!(rendered.contains("命令"), "{width}x{height}: {rendered}");
+        assert!(rendered.contains("› /"), "{width}x{height}: {rendered}");
+        assert!(g.input.contains(terminal.get_cursor_position().unwrap()));
+        for y in g.tree.y..g.tree.bottom() {
+            for x in g.tree.x..g.tree.right() {
+                assert_eq!(before[(x, y)], terminal.backend().buffer()[(x, y)]);
+            }
+        }
+    }
+}
+
+#[test]
+fn clicking_the_editor_restores_commands_without_losing_the_draft() {
+    let mut rt = Runtime::new(Application::new(), Theme::Auto);
+    rt.ui.view = View::Read;
+    rt.ui.focus = Focus::Content;
+    rt.ui.completions_hidden = true;
+    rt.ui.editor.set("/the".into());
+    let cursor = rt.ui.editor.cursor;
+    let area = ratatui::layout::Rect::new(0, 0, 100, 30);
+    let input = render::geometry(area, &rt.ui).input;
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: input.x + 3,
+        row: input.y + 2,
+        modifiers: KeyModifiers::NONE,
+    };
+    assert!(rt.mouse(click, area));
+    assert_eq!(rt.ui.focus, Focus::Input);
+    assert_eq!(rt.ui.view, View::Read);
+    assert_eq!(rt.ui.editor.text, "/the");
+    assert_eq!(rt.ui.editor.cursor, cursor);
+    assert_eq!(rt.ui.candidates().len(), 3);
+    rt.ui.session_panel = true;
+    assert!(rt.ui.candidates().is_empty());
+    rt.ui.focus = Focus::Content;
+    assert!(!rt.mouse(click, area));
+    assert_eq!(rt.ui.focus, Focus::Content);
+}
+
+#[test]
+fn copy_uses_original_message_text_and_never_copies_the_draft() {
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.editor.set("尚未发送的草稿".into());
+    assert!(ui.copy_text(false).is_err());
+    assert!(ui.copy_text(true).is_err());
+    ui.message("你", "解释数据库事务");
+    let reply = "## 事务\n\n中文 e\u{301} 👩‍💻\n\n```sql\nBEGIN;\nCOMMIT;\n```";
+    ui.message("Lumen", reply);
+    ui.message("系统", "执行完毕");
+    ui.message("Lumen", "");
+    assert_eq!(ui.copy_text(false).unwrap(), reply);
+    assert_eq!(
+        ui.copy_text(true).unwrap(),
+        format!("你:\n解释数据库事务\n\nLumen:\n{reply}\n\n系统:\n执行完毕")
+    );
+    assert_eq!(ui.editor.text, "尚未发送的草稿");
+
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+    assert_eq!(
+        ui.copy_text(false).unwrap(),
+        reply,
+        "copy must not use wrapped terminal rows"
+    );
+    ui.messages
+        .last_mut()
+        .unwrap()
+        .body
+        .push_str("正在生成的回复");
+    assert_eq!(ui.copy_text(false).unwrap(), "正在生成的回复");
+    ui.close_session();
+    assert!(
+        ui.copy_text(true).is_err(),
+        "closed sessions must not leak into copying"
+    );
+}
+
+#[test]
+fn copy_commands_execute_from_candidates_and_empty_replies_keep_the_input() {
+    let mut ui = Ui::new("mock".into(), Theme::Auto);
+    ui.editor.set("/cop".into());
+    assert_eq!(ui.candidates()[0].label, "/copy");
+    ui.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(matches!(
+        ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Some(Action::Submit(text)) if text.trim() == "/copy all"
+    ));
+    let mut rt = Runtime::new(Application::new(), Theme::Auto);
+    rt.ui.editor.set("/copy".into());
+    rt.submit("/copy".into());
+    assert!(rt.ui.error);
+    assert_eq!(rt.ui.editor.text, "/copy");
+    assert!(rt.ui.notice.as_ref().unwrap().contains("没有可复制"));
+    assert!(rt.operation.is_none());
+}
+
+#[test]
+fn command_candidates_enter_executes_and_tab_only_completes() {
     for confirm in [KeyCode::Enter, KeyCode::Tab] {
         let mut ui = Ui::new("mock".into(), Theme::Auto);
         ui.editor.set("/the".into());
-        assert!(ui
-            .key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
-            .is_none());
+        ui.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(ui.candidates()[ui.candidate].label, "/theme light");
-        assert!(ui.key(KeyEvent::new(confirm, KeyModifiers::NONE)).is_none());
+        let action = ui.key(KeyEvent::new(confirm, KeyModifiers::NONE));
+        if confirm == KeyCode::Enter {
+            assert!(matches!(action, Some(Action::Submit(text)) if text.trim() == "/theme light"));
+        } else {
+            assert!(action.is_none());
+            assert!(
+                matches!(ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(Action::Submit(text)) if text.trim() == "/theme light")
+            );
+        }
         assert_eq!(ui.editor.text, "/theme light ");
         assert_eq!(ui.focus, Focus::Input);
         assert!(ui.candidates().is_empty());
-        assert!(
-            matches!(ui.key(KeyEvent::new(KeyCode::Enter,KeyModifiers::NONE)),Some(Action::Submit(text)) if text=="/theme light ")
-        );
     }
     for command in ["/session", "/sessions", "/model", "/models", "/sync"] {
         let mut ui = Ui::new("mock".into(), Theme::Auto);
         ui.editor.set(command.into());
         assert_eq!(ui.candidates()[0].label, command);
         assert!(
-            matches!(ui.key(KeyEvent::new(KeyCode::Enter,KeyModifiers::NONE)),Some(Action::Submit(text)) if text==command)
+            matches!(ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(Action::Submit(text)) if text == command)
         );
     }
+}
+
+#[test]
+fn commands_with_required_arguments_keep_input_until_the_arguments_are_supplied() {
+    for (prefix, command, arguments) in [
+        ("/workspace ini", "/workspace init", "\"/tmp/学习 空间\""),
+        ("/sear", "/search", "事务隔离"),
+        ("/provider k", "/provider key", "company"),
+    ] {
+        let mut ui = Ui::new("mock".into(), Theme::Auto);
+        ui.editor.set(prefix.into());
+        assert!(ui
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .is_none());
+        assert_eq!(ui.editor.text, format!("{command} "));
+        assert_eq!(ui.focus, Focus::Input);
+        assert!(ui.notice.as_ref().is_some_and(|n| n.contains("参数")));
+        assert!(ui.candidates().is_empty());
+        ui.editor.insert(arguments);
+        assert!(
+            matches!(ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(Action::Submit(text)) if text == format!("{command} {arguments}"))
+        );
+    }
+}
+
+#[test]
+fn a_single_enter_on_a_command_prefix_applies_the_selected_theme() {
+    let mut rt = Runtime::new(Application::new(), Theme::Auto);
+    rt.ui.editor.set("/the".into());
+    rt.ui.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let action = rt
+        .ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .expect("selected command executes on the first Enter");
+    rt.action(action);
+    assert_eq!(rt.ui.theme, Theme::Light);
+    assert!(rt.ui.editor.text.is_empty());
+    assert!(rt.operation.is_none());
 }
 
 #[test]
@@ -165,9 +425,9 @@ fn command_list_scrolls_to_the_selected_entry_and_escape_keeps_the_draft() {
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
     terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
     assert!(screen(&terminal).contains(&format!("› {selected}")));
-    assert!(ui
-        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-        .is_none());
+    assert!(
+        matches!(ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(Action::Submit(text)) if text.trim() == selected)
+    );
     assert_eq!(ui.editor.text, format!("{selected} "));
 
     let mut ui = Ui::new("mock".into(), Theme::Auto);
@@ -203,9 +463,9 @@ fn completing_a_command_in_the_middle_preserves_arguments_and_unicode_boundaries
         for _ in 0..index {
             ui.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         }
-        assert!(ui
-            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
-            .is_none());
+        assert!(
+            matches!(ui.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Some(Action::Submit(text)) if text == expected)
+        );
         assert_eq!(ui.editor.text, expected);
         assert!(ui.editor.text.is_char_boundary(ui.editor.cursor));
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -374,7 +634,7 @@ async fn reading_is_not_replaced_by_streaming_answers_and_commands_restore_posit
     rt.ui.editor.set("保留草稿".into());
     rt.ui.focus = Focus::Input;
     rt.ui.document.as_mut().unwrap().scroll = 3;
-    rt.ui.key(KeyEvent::new(KeyCode::F(3), KeyModifiers::NONE));
+    rt.ui.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
     assert_eq!(rt.ui.view, View::Chat);
     assert_eq!(rt.ui.unread, 0);
     assert_eq!(rt.ui.editor.text, "保留草稿");
@@ -700,13 +960,70 @@ async fn paged_history_deduplicates_and_readonly_catalog_is_available_during_run
     let result = rt.operation.take().unwrap().await;
     rt.completed(result).unwrap();
     assert_eq!(rt.ui.messages.len(), 50);
-    let cursor = rt.ui.history_before.clone().unwrap();
-    rt.action(Action::Command(crate::commands::Command::Session(
-        crate::commands::SessionCommand::History(Some(cursor)),
-    )));
-    let result = rt.operation.take().unwrap().await;
-    rt.completed(result).unwrap();
+    rt.ui.editor.set("保留这份草稿".into());
+    rt.ui.editor.left();
+    let draft_cursor = rt.ui.editor.cursor;
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal.draw(|f| render::draw(f, &mut rt.ui)).unwrap();
+    // PageUp works from the editor and loads older records without submitting a command.
+    for _ in 0..30 {
+        if let Some(action) = rt
+            .ui
+            .key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+        {
+            rt.action(action);
+        }
+        if rt.ui.history_loading {
+            break;
+        }
+        terminal.draw(|f| render::draw(f, &mut rt.ui)).unwrap();
+    }
+    assert!(rt.ui.history_loading);
+    assert!(rt.operation.is_none());
+    terminal.draw(|f| render::draw(f, &mut rt.ui)).unwrap();
+    let area = terminal.backend().buffer().area;
+    let pane = render::geometry(area, &rt.ui).content;
+    let visible_before = screen(&terminal)
+        .lines()
+        .skip(pane.y as usize + 2)
+        .take(6)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let pending = rt.history_pending.clone();
+    let requests = rt.jobs.len();
+    assert!(rt.mouse(
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: pane.x + 3,
+            row: pane.y + 3,
+            modifiers: KeyModifiers::NONE
+        },
+        area
+    ));
+    assert_eq!(rt.history_pending, pending);
+    assert_eq!(
+        rt.jobs.len(),
+        requests,
+        "repeated wheel events must not duplicate a pending read"
+    );
+    while rt.ui.history_loading {
+        navigate(&mut rt).await;
+    }
     assert_eq!(rt.ui.messages.len(), 100);
+    assert_eq!(rt.ui.editor.text, "保留这份草稿");
+    assert_eq!(rt.ui.editor.cursor, draft_cursor);
+    assert_eq!(rt.ui.focus, Focus::Input);
+    terminal.draw(|f| render::draw(f, &mut rt.ui)).unwrap();
+    let visible_after = screen(&terminal)
+        .lines()
+        .skip(pane.y as usize + 2)
+        .take(6)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        visible_before, visible_after,
+        "prepending a page must preserve the visible conversation"
+    );
     let count = rt.ui.messages.len();
     let page = rt
         .app
@@ -722,8 +1039,10 @@ async fn paged_history_deduplicates_and_readonly_catalog_is_available_during_run
         )
         .await
         .unwrap();
+    let oldest = rt.ui.history_before.clone();
     rt.ui.prepend_history(page);
     assert_eq!(rt.ui.messages.len(), count);
+    assert_eq!(rt.ui.history_before, oldest);
     rt.submit("new question".into());
     loop {
         let event = tokio::time::timeout(Duration::from_secs(2), rt.agent_rx.recv())
@@ -736,6 +1055,45 @@ async fn paged_history_deduplicates_and_readonly_catalog_is_available_during_run
             break;
         }
     }
+    rt.ui.editor.set("生成过程中的草稿".into());
+    rt.ui.follow = false;
+    rt.ui.chat_scroll = 0;
+    terminal.draw(|f| render::draw(f, &mut rt.ui)).unwrap();
+    rt.mouse(
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: pane.x + 3,
+            row: pane.y + 3,
+            modifiers: KeyModifiers::NONE,
+        },
+        area,
+    );
+    assert!(rt.ui.history_loading);
+    let button = rt.ui.latest_button.unwrap();
+    rt.mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: button.x + 1,
+            row: button.y,
+            modifiers: KeyModifiers::NONE,
+        },
+        area,
+    );
+    assert!(rt.ui.follow);
+    while rt.ui.history_loading {
+        navigate(&mut rt).await;
+    }
+    assert!(rt.operation.is_some());
+    assert!(rt.ui.busy);
+    assert!(rt.ui.history_before.is_none());
+    assert_eq!(rt.ui.editor.text, "生成过程中的草稿");
+    terminal.draw(|f| render::draw(f, &mut rt.ui)).unwrap();
+    assert!(
+        rt.ui.follow,
+        "a pending history response must not undo return-to-latest"
+    );
+    assert!(rt.ui.latest_button.is_none());
+
     rt.action(Action::Command(crate::commands::Command::Sessions(
         String::new(),
     )));
@@ -1297,4 +1655,287 @@ async fn login_and_model_commands_expose_menus_and_auth_save_works_offline() {
     );
     app.manager.as_mut().unwrap().close(None).unwrap();
     w.close(CancellationToken::new()).await.unwrap();
+}
+
+#[test]
+fn directory_stays_visible_across_view_switches_and_workspace_changes() {
+    let mut ui = Ui::new("research-model".into(), Theme::Dark);
+    ui.session_title = "事务与并发控制".into();
+    ui.editor.set("请解释数据库的隔离级别。".into());
+    let area = ratatui::layout::Rect::new(0, 0, 120, 32);
+    let standalone = render::geometry(area, &ui);
+    assert!(standalone.tree.width > 0);
+    assert_eq!(standalone.input.height, 4);
+    ui.key(KeyEvent::new(KeyCode::F(6), KeyModifiers::NONE));
+    assert_eq!(ui.focus, Focus::Tree);
+    ui.key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+    assert_eq!(ui.view, View::Read);
+    assert_eq!(ui.focus, Focus::Content);
+    assert_eq!(render::geometry(area, &ui).tree, standalone.tree);
+    ui.key(KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+    assert_eq!(ui.view, View::Chat);
+    assert_eq!(render::geometry(area, &ui).tree, standalone.tree);
+    for _ in 0..2 {
+        ui.key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert_eq!(ui.focus, Focus::Tree);
+        assert_eq!(render::geometry(area, &ui).tree, standalone.tree);
+    }
+    ui.workspace_path = Some("/tmp/learning".into());
+    ui.workspace_name = "learning".into();
+    let workspace = render::geometry(area, &ui);
+    assert_eq!(workspace.tree, standalone.tree);
+    assert_eq!(ui.editor.text, "请解释数据库的隔离级别。");
+    ui.editor.insert("\n请给出一个例子。\n说明适用场景。");
+    let multiline = render::geometry(area, &ui);
+    assert!(multiline.input.height > workspace.input.height);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    ui.focus = Focus::Input;
+    ui.notify("连接参数有误，请检查配置。", true);
+    terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+    let output = screen(&terminal);
+    assert!(output.contains("事务与并发控制"));
+    assert!(output.contains("连接参数有误，请检查配置。"));
+    assert!(output.contains("research-model"));
+    assert!(multiline
+        .input
+        .contains(terminal.get_cursor_position().unwrap()));
+}
+
+#[test]
+fn dialog_focus_survives_narrow_windows_and_long_cjk_search_without_exposing_secrets() {
+    for (width, height) in [(24, 9), (40, 12), (88, 24), (120, 36)] {
+        let mut ui = Ui::new("mock".into(), Theme::Auto);
+        ui.provider_dialog = Some(provider_setup::ProviderDialog::key("company".into()));
+        ui.provider_dialog
+            .as_mut()
+            .unwrap()
+            .paste("private-test-key");
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+        assert!(!screen(&terminal).contains("private-test-key"));
+        assert!(screen(&terminal).contains("*****"));
+        let caret = terminal.get_cursor_position().unwrap();
+        assert!(caret.x < width && caret.y < height - 2);
+        ui.provider_dialog = Some(provider_setup::ProviderDialog::providers(vec![], false));
+        ui.provider_dialog
+            .as_mut()
+            .unwrap()
+            .paste(&"供应商搜索".repeat(30));
+        terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+        let caret = terminal.get_cursor_position().unwrap();
+        assert!(caret.x < width && caret.y < height - 2);
+        // The selector owns focus; confirmation must open the custom form, not submit chat.
+        assert!(ui
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .is_none());
+        assert!(ui.messages.is_empty());
+        assert!(ui.provider_dialog.is_some());
+    }
+}
+
+#[test]
+fn automatic_workbench_uses_terminal_colors_for_content_selection_and_dialogs() {
+    use ratatui::style::Modifier;
+    assert_eq!(Theme::default(), Theme::Auto);
+    assert_eq!(Theme::Auto.selected().fg, Some(Color::Reset));
+    assert_eq!(Theme::Auto.selected().bg, Some(Color::Reset));
+    assert!(Theme::Auto
+        .selected()
+        .add_modifier
+        .contains(Modifier::REVERSED));
+    let mut ui = Ui::new("company:chat".into(), Theme::Auto);
+    ui.workspace_path = Some("/tmp/palette-workspace".into());
+    ui.workspace_name = "学习笔记".into();
+    ui.tree.objects = vec![ObjectMetadata::new(ObjectKind::Concept, "事务隔离")];
+    ui.message("你", "如何理解事务隔离？");
+    ui.message("Lumen", "## 事务隔离\n\n可以先查看[参考资料](https://example.test)。\n\n```sql\nBEGIN;\nCOMMIT;\n```");
+    let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    for popup in 0..4 {
+        ui.provider_dialog = match popup {
+            1 => Some(provider_setup::ProviderDialog::providers(vec![], false)),
+            2 => Some(provider_setup::ProviderDialog::key("company".into())),
+            _ => None,
+        };
+        ui.session_panel = popup == 3;
+        terminal.draw(|f| render::draw(f, &mut ui)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert!(buffer.content.iter().all(|cell| cell.bg == Color::Reset));
+        assert!(buffer
+            .content
+            .iter()
+            .all(|cell| !matches!(cell.fg, Color::Rgb(..) | Color::Indexed(_))));
+        if popup == 0 {
+            let tree = render::geometry(buffer.area, &ui).tree;
+            assert!((tree.y..tree.bottom()).any(|y| buffer[(tree.x + 1, y)]
+                .modifier
+                .contains(Modifier::REVERSED)));
+        }
+    }
+}
+
+#[test]
+fn mouse_scroll_preserves_drafts_and_latest_click_resumes_following_streamed_replies() {
+    let mut rt = Runtime::new(Application::new(), Theme::Auto);
+    rt.ui.workspace_path = Some("/tmp/scroll-workspace".into());
+    rt.ui.tree.objects = (0..5)
+        .map(|i| ObjectMetadata::new(ObjectKind::Concept, format!("知识 {i}")))
+        .collect();
+    for i in 0..80 {
+        rt.ui.message("Lumen", format!("第 {i} 条历史回复。"));
+    }
+    rt.ui.editor.set("尚未发送的中文草稿".into());
+    rt.ui.editor.left();
+    let draft = rt.ui.editor.text.clone();
+    let cursor = rt.ui.editor.cursor;
+    let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+    terminal.draw(|f| render::draw(f, &mut rt.ui)).unwrap();
+    let area = terminal.backend().buffer().area;
+    let geometry = render::geometry(area, &rt.ui);
+    let event = |kind, column, row| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let latest = rt.ui.chat_scroll;
+    assert!(rt.mouse(
+        event(
+            MouseEventKind::ScrollUp,
+            geometry.content.x + 3,
+            geometry.content.y + 3
+        ),
+        area
+    ));
+    assert!(rt.ui.chat_scroll < latest);
+    assert!(!rt.ui.follow);
+    let reading_position = rt.ui.chat_scroll;
+    rt.ui.agent(AgentEvent::MessageDelta {
+        delta: "新回复仍在继续生成。".into(),
+    });
+    terminal.draw(|f| render::draw(f, &mut rt.ui)).unwrap();
+    assert_eq!(rt.ui.chat_scroll, reading_position);
+    assert_eq!(rt.ui.focus, Focus::Input);
+    assert_eq!(rt.ui.editor.text, draft);
+    assert_eq!(rt.ui.editor.cursor, cursor);
+    assert!(rt.mouse(
+        event(
+            MouseEventKind::ScrollDown,
+            geometry.content.x + 3,
+            geometry.content.y + 3
+        ),
+        area
+    ));
+    assert_eq!(rt.ui.chat_scroll, reading_position + 3);
+    assert!(rt.mouse(
+        event(
+            MouseEventKind::ScrollUp,
+            geometry.content.x + 3,
+            geometry.content.y + 3
+        ),
+        area
+    ));
+    assert_eq!(rt.ui.chat_scroll, reading_position);
+    let button = rt
+        .ui
+        .latest_button
+        .expect("history view offers a return-to-latest control");
+    assert!(screen(&terminal).contains("回到最新"));
+    assert!(rt.mouse(
+        event(
+            MouseEventKind::Down(MouseButton::Left),
+            button.x + 1,
+            button.y
+        ),
+        area
+    ));
+    terminal.draw(|f| render::draw(f, &mut rt.ui)).unwrap();
+    assert!(rt.ui.follow);
+    assert!(rt.ui.latest_button.is_none());
+    assert_eq!(
+        rt.ui.chat_scroll,
+        rt.ui.content_lines - rt.ui.viewport_height
+    );
+    assert!(screen(&terminal).contains("新回复仍在继续生成。"));
+    assert_eq!(rt.ui.editor.text, draft);
+    assert_eq!(rt.ui.editor.cursor, cursor);
+    let old_scroll = rt.ui.chat_scroll;
+    assert!(!rt.mouse(
+        event(
+            MouseEventKind::ScrollUp,
+            geometry.input.x + 3,
+            geometry.input.y + 1
+        ),
+        area
+    ));
+    assert_eq!(rt.ui.chat_scroll, old_scroll);
+    let tree = geometry.tree;
+    assert!(rt.mouse(
+        event(MouseEventKind::ScrollDown, tree.x + 2, tree.y + 2),
+        area
+    ));
+    assert!(rt.ui.tree.selected > 0);
+    assert_eq!(rt.ui.chat_scroll, old_scroll);
+    assert_eq!(rt.ui.focus, Focus::Input);
+    rt.ui
+        .key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+    assert!(!rt.ui.follow);
+    rt.ui
+        .key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+    assert!(rt.ui.follow);
+    assert_eq!(rt.ui.editor.text, draft);
+    rt.ui.provider_dialog = Some(provider_setup::ProviderDialog::key("company".into()));
+    assert!(!rt.mouse(
+        event(
+            MouseEventKind::ScrollUp,
+            geometry.content.x + 3,
+            geometry.content.y + 3
+        ),
+        area
+    ));
+    assert!(
+        rt.ui.follow,
+        "modal dialogs must block scrolling the conversation behind them"
+    );
+}
+
+#[test]
+fn late_history_pages_cannot_change_the_newly_activated_session() {
+    let mut rt = Runtime::new(Application::new(), Theme::Auto);
+    let old = HistoryRequest {
+        epoch: rt.epoch,
+        identity: crate::session::SessionIdentity {
+            store_id: "store".into(),
+            session_id: "old".into(),
+        },
+        activation: 1,
+        before: "old-cursor".into(),
+    };
+    let current = HistoryRequest {
+        identity: crate::session::SessionIdentity {
+            store_id: "store".into(),
+            session_id: "current".into(),
+        },
+        activation: 2,
+        before: "current-cursor".into(),
+        ..old.clone()
+    };
+    rt.ui.session_identity = Some(current.identity.clone());
+    rt.ui.session_activation = current.activation;
+    rt.ui.history_before = Some(current.before.clone());
+    rt.ui.editor.set("新会话的草稿".into());
+    rt.ui.message("Lumen", "新会话的内容");
+    rt.ui.history_loading = true;
+    rt.history_pending = Some(current.clone());
+    rt.navigation(Navigation::History {
+        request: old,
+        result: Ok(crate::session::HistoryPage {
+            messages: vec![],
+            before: None,
+        }),
+    });
+    assert_eq!(rt.history_pending, Some(current));
+    assert!(rt.ui.history_loading);
+    assert_eq!(rt.ui.history_before.as_deref(), Some("current-cursor"));
+    assert_eq!(rt.ui.messages.len(), 1);
+    assert_eq!(rt.ui.editor.text, "新会话的草稿");
 }

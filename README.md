@@ -101,29 +101,37 @@ cargo run --bin lumen-tui
 cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 ```
 
-左侧为知识目录，右上在 Markdown 与会话记录之间切换，右下固定保留多行 Agent 输入。面板共用细线边界，内部标题栏与正文对齐，蓝紫强调色区分导航和 Agent。默认继承终端配色，适配 VS Code 的浅色或深色集成终端；`cargo run --bin lumen-tui -- --theme light` 可查看与设计图一致的浅色配色。
+界面采用分栏工作台：左侧知识目录、右侧会话/阅读内容和固定输入区，区域共用单线边界，底部单行显示状态与模型；目录侧边栏始终显示，独立会话中也保持开启。供应商、模型与会话列表采用一致的搜索和选择样式。默认 `auto` 跟随当前终端的前景、背景和 ANSI 调色板，选中项反显，不锁定为设计图中的深色。可用 `/theme auto` 或启动参数 `--theme auto` 恢复跟随；`light|dark` 保留为手动覆盖。
 
 所有文字沿用终端字号；标题通过粗体和颜色区分。输入区默认获得焦点，使用不闪烁的原生方块光标，支持中文、组合字符、左右移动、换行、粘贴和长草稿滚动。VS Code 可按习惯将 `terminal.integrated.fontSize` 设置为 12–14，例如 13；程序不改动字体设置。
+
+本项目的 [.vscode/settings.json](.vscode/settings.json) 已启用终端快捷键透传，集成终端聚焦时优先将大部分按键交给 TUI。若在其他 VS Code 工作区运行二进制，需在该工作区或用户设置中配置；详见 [VS Code 快捷键透传](docs/tui.md#vs-code-快捷键透传)。
 
 | 操作 | 功能 |
 | --- | --- |
 | F6 / Shift+Tab | 顺序 / 反向切换区域 |
-| F1 / F2 / F3 | 聚焦目录 / 显示阅读 / 显示对话 |
+| F1 / F2 | 会话并聚焦输入 / 显示阅读，左侧目录保持开启 |
 | Esc / i | 浏览内容 / 返回输入 |
 | Enter / Ctrl+J | 输入时发送 / 换行 |
 | ↑↓ / ←→ / Enter | 目录选择 / 折叠展开 / 打开知识 |
 | PgUp / PgDn / Home / End | 翻页 / 顶部 / 底部；对话到达底部恢复追尾 |
-| / | 输入时命令候选；目录或正文中查找 |
+| / | 从目录、会话、阅读或查找进入命令输入，显示命令候选 |
+| f | 浏览目录时筛选；浏览阅读正文时查找 |
 | @ / Tab | 输入时知识引用候选 / 确认候选 |
-| ↑↓ / Enter | 候选列表中选择 / 确认填入命令或引用；再次 Enter 执行补全后的命令 |
+| ↑↓ / Enter | 选择候选 / 直接执行选中命令；引用候选仅确认引用，Tab 只补全 |
+| 鼠标滚轮 / PgUp、PgDn | 滚动内容与加载更早对话，保留输入草稿 |
+| 点击“回到最新” / Ctrl+End | 返回最新对话并恢复自动跟随 |
+| /copy / /copy all | 复制最近一条模型回复 / 当前已加载对话 |
 | a / v | 阅读时引用当前章节 / 开始行选区；用 ↑↓ 扩展后按 a 引用 |
 | Tab / Enter | 内容区中选择链接 / 打开来源 |
-| Ctrl+R / Ctrl+B | 移除引用 / 显示或收起目录 |
+| Ctrl+R / Ctrl+B | 移除引用 / 聚焦并刷新目录 |
 | Ctrl+C / Ctrl+Q | 停止任务 / 退出；有草稿时再次按 Ctrl+Q 确认 |
 
 `/open <标题或 ID>` 打开文档，`/chat` 查看会话，`/read` 返回原文。阅读时发问会保留文档，回复就绪后显示提示；后台任务不抢走阅读视图。切换保留阅读位置和输入草稿。`/help` 查看全部命令。
 
-主题默认为 `auto`，可用 `/theme light`、`/theme dark`、`/theme auto` 切换，也可通过 `--theme` 或 `LUMEN_THEME` 指定。`LUMEN_WORKSPACE` 可设置启动工作区。窄屏自动收起目录，F1 可再次打开。
+复制回复可执行 `/copy`，`/copy all` 复制当前已加载的消息，保留原始 Markdown 和代码，不带界面边框或屏幕换行。局部选字时，VS Code 的 Windows/Linux 终端需按住 Alt 拖拽，再使用终端的复制菜单；macOS 需开启 `terminal.integrated.macOptionClickForcesSelection` 后按住 Option 拖拽。详见 [复制会话文字](docs/tui.md#复制会话文字)。
+
+主题默认为 `auto`，可用 `/theme light`、`/theme dark`、`/theme auto` 切换，也可通过 `--theme` 或 `LUMEN_THEME` 指定。`LUMEN_WORKSPACE` 可设置启动工作区。目录始终显示，窄屏时自动压缩左栏宽度。
 
 未配置模型时显示演示模式，本地知识功能仍可使用。重定向输入或输出时自动使用行模式；`--plain` 可显式启用行模式。细节见 [TUI 使用说明](docs/tui.md)。
 
@@ -146,7 +154,7 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 上下文由统一插件管理，检索与 Skill 按需追加，达到水位时生成结构化摘要并提交可恢复检查点。`/context` 查看窗口分区与预留，`/compact` 安排下一请求前压缩，`/skills` 查看本地 Skill。
 
-会话管理支持 `/sessions [query]` 列表与搜索、`/new [title]` 新建、`/resume <session-id>` 切换与恢复、`/session rename <title>` 重命名、`/session archive [id]` 归档、`/session unarchive <id>` 取消归档及 `/session close` 关闭。TUI 列表支持输入过滤、↑↓ 选择、Enter 打开、PgDn 下一页；聊天顶部 PgUp 加载更早历史。切换会恢复聊天、草稿和阅读位置，运行中需要先 `/stop` 并等待收尾；列表和详情仍可查看。
+会话管理支持 `/sessions [query]` 列表与搜索、`/new [title]` 新建、`/resume <session-id>` 切换与恢复、`/session rename <title>` 重命名、`/session archive [id]` 归档、`/session unarchive <id>` 取消归档及 `/session close` 关闭。TUI 列表支持输入过滤、↑↓ 选择、Enter 打开、PgDn 下一页；对话区支持鼠标滚轮和 PgUp/PgDn，顶部继续向上滚动加载更早历史；翻阅时显示可点击的“回到最新”，Ctrl+End 也可恢复自动跟随。切换会恢复聊天、草稿和阅读位置，运行中需要先 `/stop` 并等待收尾；列表和详情仍可查看。
 
 工作区会话保存于 `sessions/<id>/session.yaml` 和不可变 JSONL 片段。无工作区时使用 `LUMEN_SESSION_DIR` 指定的目录，默认位于平台应用数据目录下的 `lumen/`；启动恢复最近会话。旧 `LUMEN_SESSION` 文件保留原样，目标目录默认为同路径的 `.sessions` 目录；用 `/session preview <file>` 只读浏览、`/session import <file>` 幂等导入，再 `/resume <id>` 继续。
 
