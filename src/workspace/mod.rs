@@ -510,14 +510,20 @@ fn prepare(
                 "destination must be empty".into(),
             ));
         }
-        if root
-            .parent()
-            .and_then(|p| git2::Repository::discover(p).ok())
-            .is_some()
-        {
-            return Err(WorkspaceError::Configuration(
-                "nested repositories are not supported".into(),
-            ));
+        // Git discovery needs a directory that already exists. Check before creating
+        // any missing parents so a rejected destination leaves no directories behind.
+        for parent in root.ancestors().skip(1) {
+            if parent.try_exists()? {
+                match git2::Repository::discover(parent.canonicalize()?) {
+                    Ok(_) => {
+                        return Err(WorkspaceError::Configuration(
+                            "nested repositories are not supported".into(),
+                        ));
+                    }
+                    Err(error) if error.code() == git2::ErrorCode::NotFound => break,
+                    Err(error) => return Err(error.into()),
+                }
+            }
         }
         fs::create_dir_all(&root)?;
     }

@@ -11,6 +11,7 @@ mod queue;
 mod session;
 mod tool;
 
+pub use bash::*;
 pub use compaction::*;
 pub use error::*;
 pub use event::*;
@@ -23,3 +24,4 @@ pub use provider::*;
 pub use queue::*;
 pub use session::*;
 pub use tool::*;
+mod bash;

@@ -63,6 +63,30 @@ async fn change(w: &WorkspaceHandle, id: &ObjectId, body: &str) {
         .unwrap();
 }
 #[tokio::test]
+async fn init_rejects_nested_git_repositories_before_creating_missing_parents() {
+    let dir = tempfile::tempdir().unwrap();
+    let git_root = dir.path().join("source");
+    git2::Repository::init(&git_root).unwrap();
+
+    for destination in ["workspace", "missing-parent/workspace"] {
+        let result = WorkspaceService::init(
+            InitRequest {
+                root: git_root.join(destination),
+                author_name: "Test".into(),
+                author_email: "test@example.com".into(),
+            },
+            c(),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(WorkspaceError::Configuration(message)) if message == "nested repositories are not supported")
+        );
+    }
+    assert!(!git_root.join("workspace").exists());
+    assert!(!git_root.join("missing-parent").exists());
+}
+
+#[tokio::test]
 async fn markdown_revision_graph_and_atomic_batch() {
     let dir = tempfile::tempdir().unwrap();
     let w = init(&dir.path().join("notes")).await;

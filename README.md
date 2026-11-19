@@ -129,7 +129,7 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 `/open <标题或 ID>` 打开文档，`/chat` 查看会话，`/read` 返回原文。阅读时发问会保留文档，回复就绪后显示提示；后台任务不抢走阅读视图。切换保留阅读位置和输入草稿。`/help` 查看全部命令。
 
-复制回复可执行 `/copy`，`/copy all` 复制当前已加载的消息，保留原始 Markdown 和代码，不带界面边框或屏幕换行。局部选字时，VS Code 的 Windows/Linux 终端需按住 Alt 拖拽，再使用终端的复制菜单；macOS 需开启 `terminal.integrated.macOptionClickForcesSelection` 后按住 Option 拖拽。详见 [复制会话文字](docs/tui.md#复制会话文字)。
+在对话区左键拖动可选中文字，按 Ctrl+C 复制。`/copy` 复制最近一条回复原文，`/copy all` 复制当前已加载的消息，保留原始 Markdown 和代码。详见 [复制会话文字](docs/tui.md#复制会话文字)。
 
 主题默认为 `auto`，可用 `/theme light`、`/theme dark`、`/theme auto` 切换，也可通过 `--theme` 或 `LUMEN_THEME` 指定。`LUMEN_WORKSPACE` 可设置启动工作区。目录始终显示，窄屏时自动压缩左栏宽度。
 
@@ -154,9 +154,11 @@ cargo run --bin lumen-tui -- --workspace /path/to/knowledge
 
 上下文由统一插件管理，检索与 Skill 按需追加，达到水位时生成结构化摘要并提交可恢复检查点。`/context` 查看窗口分区与预留，`/compact` 安排下一请求前压缩，`/skills` 查看本地 Skill。
 
+模型可调用 `bash` 执行命令、curl 和脚本；原有三个网络研究工具保持不变。Bash 首版依赖 Linux x86_64/aarch64 与 Bubblewrap，默认联网，仅暴露显式选择输入的只读快照，写入限于有容量限制的临时目录；凭据环境不继承，隔离不可用时拒绝执行。临时文件不跨调用保留，大文本结果通过现有上下文归档回读。参数、依赖和具体边界见 [Bash 工具](docs/bash-tool.md)。
+
 核心系统规则采用独立的版本化模板，涵盖学习支持、研究引用、真实工具结果、知识写入与上下文解释。已有会话在下次发送消息时追加当前规则，保留原始历史，模型窗口只采用最新应用规则；自定义 System 消息保留。模板位置和升级机制见 [核心规则与工具指导](docs/architecture/core-prompt.md)。
 
-会话管理支持 `/sessions [query]` 列表与搜索、`/new [title]` 新建、`/resume <session-id>` 切换与恢复、`/session rename <title>` 重命名、`/session archive [id]` 归档、`/session unarchive <id>` 取消归档及 `/session close` 关闭。TUI 列表支持输入过滤、↑↓ 选择、Enter 打开、PgDn 下一页；对话区支持鼠标滚轮和 PgUp/PgDn，顶部继续向上滚动加载更早历史；翻阅时显示可点击的“回到最新”，Ctrl+End 也可恢复自动跟随。切换会恢复聊天、草稿和阅读位置，运行中需要先 `/stop` 并等待收尾；列表和详情仍可查看。
+会话管理支持 `/sessions [query]` 列表与搜索、`/new [title]` 新建、`/resume` 列出可恢复会话、`/resume <session-id>` 直接恢复、`/session rename <title>` 重命名、`/session archive [id]` 归档、`/session unarchive <id>` 取消归档及 `/session close` 关闭。TUI 列表支持输入过滤、↑↓ 选择、Enter 打开、PgDn 下一页；对话区支持鼠标滚轮和 PgUp/PgDn，顶部继续向上滚动加载更早历史；翻阅时显示可点击的“回到最新”，Ctrl+End 也可恢复自动跟随。切换会恢复聊天、草稿和阅读位置，运行中需要先 `/stop` 并等待收尾；列表和详情仍可查看。
 
 工作区会话保存于 `sessions/<id>/session.yaml` 和不可变 JSONL 片段。无工作区时使用 `LUMEN_SESSION_DIR` 指定的目录，默认位于平台应用数据目录下的 `lumen/`；启动恢复最近会话。旧 `LUMEN_SESSION` 文件保留原样，目标目录默认为同路径的 `.sessions` 目录；用 `/session preview <file>` 只读浏览、`/session import <file>` 幂等导入，再 `/resume <id>` 继续。
 

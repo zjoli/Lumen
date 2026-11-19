@@ -14,7 +14,8 @@ thiserror = "2"
 jsonschema = { version = "0.33", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 async-stream = "0.3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util", "process"] }
+tempfile = "3"
 tokio-util = { version = "0.7", features = ["rt"] }
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2", "https", "ssh"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
@@ -32,6 +33,7 @@ unicode-width = "0.2.0"
 unicode-segmentation = "1.12"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 git2 = { version = "0.21", default-features = false, features = ["vendored-openssl"] }
 dbus = { version = "0.9", features = ["vendored"] }
 

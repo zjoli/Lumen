@@ -366,7 +366,15 @@ fn command_candidates_enter_executes_and_tab_only_completes() {
         assert_eq!(ui.focus, Focus::Input);
         assert!(ui.candidates().is_empty());
     }
-    for command in ["/session", "/sessions", "/model", "/models", "/sync"] {
+    for command in [
+        "/session",
+        "/sessions",
+        "/resume",
+        "/model",
+        "/models",
+        "/sync",
+        "/workspace init",
+    ] {
         let mut ui = Ui::new("mock".into(), Theme::Auto);
         ui.editor.set(command.into());
         assert_eq!(ui.candidates()[0].label, command);
@@ -379,7 +387,7 @@ fn command_candidates_enter_executes_and_tab_only_completes() {
 #[test]
 fn commands_with_required_arguments_keep_input_until_the_arguments_are_supplied() {
     for (prefix, command, arguments) in [
-        ("/workspace ini", "/workspace init", "\"/tmp/学习 空间\""),
+        ("/workspace op", "/workspace open", "\"/tmp/学习 空间\""),
         ("/sear", "/search", "事务隔离"),
         ("/provider k", "/provider key", "company"),
     ] {
@@ -913,6 +921,74 @@ async fn switching_sessions_restores_history_draft_reading_and_rejects_stale_eve
         .draw(|frame| render::draw(frame, &mut rt.ui))
         .unwrap();
     assert!(screen(&terminal).contains("第一课"));
+    rt.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn resume_picker_filters_before_paging_and_opens_the_selected_session() {
+    use crate::session::{SessionContext, SessionMetadata, SessionModel};
+
+    let (_dir, workspace, _) = fixture().await;
+    let (mut rt, _) = runtime(workspace.clone(), false);
+    navigate(&mut rt).await;
+    let app = rt.app.as_mut().unwrap();
+    app.ensure_manager().await.unwrap();
+    let repo = app.manager.as_ref().unwrap().repository().clone();
+    let mut resumable_ids = std::collections::BTreeSet::new();
+    for i in 0..21 {
+        let metadata = SessionMetadata::new(
+            Some(format!("会话 {i}")),
+            SessionModel::default(),
+            SessionContext::default(),
+        );
+        repo.save_metadata(&metadata, None).await.unwrap();
+        resumable_ids.insert(metadata.id);
+    }
+    let mut archived = SessionMetadata::new(
+        Some("归档会话".into()),
+        SessionModel::default(),
+        SessionContext::default(),
+    );
+    archived.archived = true;
+    repo.save_metadata(&archived, None).await.unwrap();
+    let corrupt = repo
+        .root()
+        .join(format!("sessions/session_{}", uuid::Uuid::now_v7()));
+    std::fs::create_dir(&corrupt).unwrap();
+    std::fs::write(corrupt.join("session.yaml"), "[invalid").unwrap();
+
+    rt.submit("/resume".into());
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    assert!(rt.ui.session_panel && rt.ui.session_panel_for_resume);
+    assert_eq!(rt.ui.session_choices.len(), 20);
+    for info in &rt.ui.session_choices {
+        assert!(resumable_ids.remove(&info.identity.session_id));
+    }
+
+    let page_down = rt
+        .ui
+        .key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+        .unwrap();
+    rt.action(page_down);
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    assert!(rt.ui.session_panel_for_resume);
+    assert!(rt.ui.session_next.is_none());
+    assert_eq!(rt.ui.session_choices.len(), 1);
+    let selected = rt.ui.session_choices[0].identity.clone();
+    assert!(resumable_ids.remove(&selected.session_id));
+    assert!(resumable_ids.is_empty());
+
+    let enter = rt
+        .ui
+        .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .unwrap();
+    rt.action(enter);
+    let result = rt.operation.take().unwrap().await;
+    rt.completed(result).unwrap();
+    assert!(!rt.ui.session_panel);
+    assert_eq!(rt.ui.session_identity, Some(selected));
     rt.shutdown().await.unwrap();
 }
 
@@ -1771,6 +1847,68 @@ fn automatic_workbench_uses_terminal_colors_for_content_selection_and_dialogs() 
                 .contains(Modifier::REVERSED)));
         }
     }
+}
+
+#[test]
+fn mouse_drag_copies_visible_chat_text_without_touching_the_draft_or_cancelling() {
+    use ratatui::style::Modifier;
+
+    let mut rt = Runtime::new(Application::new(), Theme::Auto);
+    for _ in 0..30 {
+        rt.ui.message("Lumen", "更早的回复");
+    }
+    rt.ui.message("你", "前中文A\nZ e\u{301} 尾");
+    rt.ui.editor.set("输入草稿".into());
+    rt.ui.busy = true;
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 25)).unwrap();
+    terminal
+        .draw(|frame| render::draw(frame, &mut rt.ui))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let area = buffer.area;
+    let pane = render::geometry(area, &rt.ui).content;
+    let x = pane.x + 2;
+    let y = (pane.y + 2..pane.bottom())
+        .find(|&row| buffer[(x, row)].symbol() == "前")
+        .unwrap();
+    assert!(rt.ui.chat_scroll > 0);
+
+    // Drag backward from a combining character to the second cell of a wide character.
+    for (kind, column, row) in [
+        (MouseEventKind::Down(MouseButton::Left), x + 2, y + 1),
+        (MouseEventKind::Drag(MouseButton::Left), x + 3, y),
+        (MouseEventKind::Up(MouseButton::Left), x + 3, y),
+    ] {
+        assert!(rt.mouse(
+            MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE
+            },
+            area
+        ));
+    }
+    let copy = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert!(
+        matches!(rt.ui.key(copy), Some(Action::CopyChatSelection(text)) if text == "中文A\nZ e\u{301}")
+    );
+    assert_eq!(rt.ui.editor.text, "输入草稿");
+    assert_eq!(rt.ui.focus, Focus::Input);
+
+    terminal
+        .draw(|frame| render::draw(frame, &mut rt.ui))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(!buffer[(x, y)].modifier.contains(Modifier::REVERSED));
+    assert!(buffer[(x + 2, y)].modifier.contains(Modifier::REVERSED));
+    assert!(buffer[(x + 2, y + 1)].modifier.contains(Modifier::REVERSED));
+    assert!(rt
+        .ui
+        .key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .is_none());
+    assert!(matches!(rt.ui.key(copy), Some(Action::Cancel)));
 }
 
 #[test]

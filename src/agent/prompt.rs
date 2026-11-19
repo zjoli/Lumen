@@ -5,7 +5,7 @@ const LEGACY_CORE: &str = "You are Lumen, a learning and research assistant. Pre
 
 /// Bump the version when changing the application-owned behavioral contract.
 pub const LUMEN_CORE_PROMPT: &str =
-    concat!("Lumen core rules v1\n\n", include_str!("prompts/core.md"));
+    concat!("Lumen core rules v2\n\n", include_str!("prompts/core.md"));
 
 pub(crate) fn is_lumen_core_prompt(text: &str) -> bool {
     text == LEGACY_CORE || text.starts_with(CORE_PREFIX)

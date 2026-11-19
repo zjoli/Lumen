@@ -222,6 +222,7 @@ pub fn draw(frame: &mut Frame, ui: &mut Ui) {
     ui.latest_button = None;
     frame.render_widget(Block::default().style(theme.base()), area);
     if area.width < 24 || area.height < 9 {
+        ui.chat_selection = Default::default();
         frame.render_widget(
             Paragraph::new("请扩大终端\nCtrl+Q 退出").style(theme.base()),
             area,
@@ -327,6 +328,8 @@ fn footer(frame: &mut Frame, ui: &Ui, row: Rect) {
     let row = Rect::new(row.x + 1, row.y, row.width.saturating_sub(2), row.height);
     let state = if let Some(notice) = &ui.notice {
         notice.clone()
+    } else if ui.view == View::Chat && ui.chat_selection.has_text_selection() {
+        "Ctrl+C 复制选区 · Esc 取消选中".into()
     } else if ui.history_loading {
         "加载更早对话…".into()
     } else if ui.busy {
@@ -390,7 +393,12 @@ fn footer(frame: &mut Frame, ui: &Ui, row: Rect) {
     }
 }
 fn session_panel(frame: &mut Frame, ui: &Ui, area: Rect) {
-    let Some(inner) = modal(frame, area, ui.theme, "会话", 88, 20) else {
+    let title = if ui.session_panel_for_resume {
+        "恢复会话"
+    } else {
+        "会话"
+    };
+    let Some(inner) = modal(frame, area, ui.theme, title, 88, 20) else {
         return;
     };
     let filtered: Vec<_> = ui
@@ -454,7 +462,12 @@ fn session_panel(frame: &mut Frame, ui: &Ui, area: Rect) {
         )));
     }
     if count == 0 {
-        lines.push(Line::from(span("没有匹配的会话", ui.theme.muted())));
+        let message = if ui.session_panel_for_resume && ui.session_filter.is_empty() {
+            "没有可恢复的会话"
+        } else {
+            "没有匹配的会话"
+        };
+        lines.push(Line::from(span(message, ui.theme.muted())));
     }
     frame.render_widget(Paragraph::new(lines), inner);
     let hint = if ui.session_next.is_some() {
@@ -496,6 +509,7 @@ fn directory(frame: &mut Frame, ui: &mut Ui, area: Rect) {
         ui.focus == Focus::Tree || ui.focus == Focus::Search && ui.search_tree,
     );
     if inner.width == 0 || inner.height == 0 {
+        ui.chat_selection = Default::default();
         return;
     }
     let rows = ui.tree.rows();
@@ -666,30 +680,36 @@ fn content(frame: &mut Frame, ui: &mut Ui, area: Rect) {
         };
         ui.chat_scroll
     };
-    let visible = lines
-        .into_iter()
-        .skip(offset)
-        .take(inner.height as usize)
-        .enumerate()
-        .map(|(i, mut line)| {
-            if ui.view == View::Read {
-                if !ui.reading_query.is_empty()
-                    && line.to_string().to_lowercase().contains(&ui.reading_query)
-                {
-                    line.style = line.style.add_modifier(Modifier::REVERSED);
+    let visible = if ui.view == View::Chat && !ui.messages.is_empty() {
+        ui.chat_selection.set_viewport(inner, offset, lines);
+        ui.chat_selection.visible_lines()
+    } else {
+        ui.chat_selection = Default::default();
+        lines
+            .into_iter()
+            .skip(offset)
+            .take(inner.height as usize)
+            .enumerate()
+            .map(|(i, mut line)| {
+                if ui.view == View::Read {
+                    if !ui.reading_query.is_empty()
+                        && line.to_string().to_lowercase().contains(&ui.reading_query)
+                    {
+                        line.style = line.style.add_modifier(Modifier::REVERSED);
+                    }
+                    if ui
+                        .document
+                        .as_ref()
+                        .and_then(|d| d.selection)
+                        .is_some_and(|(a, b)| (a.min(b)..=a.max(b)).contains(&(i + offset)))
+                    {
+                        line.style = line.style.add_modifier(Modifier::REVERSED);
+                    }
                 }
-                if ui
-                    .document
-                    .as_ref()
-                    .and_then(|d| d.selection)
-                    .is_some_and(|(a, b)| (a.min(b)..=a.max(b)).contains(&(i + offset)))
-                {
-                    line.style = line.style.add_modifier(Modifier::REVERSED);
-                }
-            }
-            line
-        })
-        .collect::<Vec<_>>();
+                line
+            })
+            .collect::<Vec<_>>()
+    };
     frame.render_widget(Paragraph::new(visible), inner);
     let selected = if ui.view == View::Read {
         ui.document
@@ -840,12 +860,13 @@ fn conversation(ui: &mut Ui, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::default());
     }
     if prepended > 0 {
+        let added_lines = if prepended == ui.messages.len() {
+            lines.len()
+        } else {
+            added_lines
+        };
+        ui.chat_selection.shift_rows(added_lines);
         if !ui.follow {
-            let added_lines = if prepended == ui.messages.len() {
-                lines.len()
-            } else {
-                added_lines
-            };
             ui.chat_scroll = ui.chat_scroll.saturating_add(added_lines);
         }
         ui.prepended_messages = 0;

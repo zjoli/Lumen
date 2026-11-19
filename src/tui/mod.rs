@@ -1,4 +1,5 @@
 //! Terminal-native knowledge browser, reader and Agent composer.
+mod chat_selection;
 mod clipboard;
 mod input;
 mod markdown;
@@ -250,6 +251,7 @@ impl Runtime {
         self.ui.reference = None;
         self.ui.positions.clear();
         self.ui.messages.clear();
+        self.ui.chat_selection = Default::default();
         self.ui.chat_links.clear();
         self.ui.chat_link = None;
         self.ui.chat_scroll = 0;
@@ -359,13 +361,8 @@ impl Runtime {
                 }
             }
             Navigation::SessionRead { epoch, result } if epoch == self.epoch => match result {
-                Ok(CommandOutcome::Sessions(page)) => {
-                    self.ui.session_next = page.next_cursor;
-                    self.ui.session_query = page.query;
-                    self.ui.session_choices = page.items;
-                    self.ui.session_filter.clear();
-                    self.ui.session_choice = 0;
-                    self.ui.session_panel = true;
+                Ok(CommandOutcome::Sessions { page, for_resume }) => {
+                    self.ui.show_sessions(page, for_resume)
                 }
                 Ok(CommandOutcome::History(page)) => self.ui.prepend_history(page),
                 Ok(outcome) => self.ui.message("系统", outcome.render()),
@@ -485,6 +482,21 @@ impl Runtime {
             return false;
         }
         let point = (event.column, event.row).into();
+        if self.ui.view == View::Chat
+            && matches!(
+                event.kind,
+                MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+            )
+            && self
+                .ui
+                .chat_selection
+                .extend(point, event.kind == MouseEventKind::Up(MouseButton::Left))
+        {
+            if self.ui.chat_selection.has_text_selection() {
+                self.ui.follow = false;
+            }
+            return true;
+        }
         if !area.contains(point) {
             return false;
         }
@@ -501,11 +513,12 @@ impl Runtime {
         }
         if event.kind == MouseEventKind::Down(MouseButton::Left) {
             if render::geometry(area, &self.ui).input.contains(point) {
+                self.ui.chat_selection.clear();
                 self.ui.focus = Focus::Input;
                 self.ui.completions_hidden = false;
                 return true;
             }
-            return false;
+            return self.ui.view == View::Chat && self.ui.chat_selection.start(point);
         }
         let delta = match event.kind {
             MouseEventKind::ScrollUp => -3,
@@ -532,6 +545,13 @@ impl Runtime {
     }
     fn action(&mut self, action: Action) {
         match action {
+            Action::CopyChatSelection(text) => match clipboard::copy(&text) {
+                Ok(()) => {
+                    self.ui.chat_selection.clear();
+                    self.ui.notify("已请求终端复制选中文字。", false);
+                }
+                Err(error) => self.ui.notify(format!("复制失败：{error}"), true),
+            },
             Action::LoadHistory(before) => self.load_history(before),
             Action::Provider(request) => {
                 let Some(mut app) = self.app.take() else {
@@ -727,6 +747,7 @@ impl Runtime {
             Some(Command::Clear) => {
                 self.ui.editor.take();
                 self.ui.messages.clear();
+                self.ui.chat_selection = Default::default();
                 self.ui.chat_links.clear();
                 self.ui.chat_link = None;
                 self.ui.streaming = None;
@@ -797,6 +818,7 @@ impl Runtime {
             command,
             Some(
                 Command::Sessions(_)
+                    | Command::ResumeList { .. }
                     | Command::SessionsNext { .. }
                     | Command::Session(crate::commands::SessionCommand::History(_))
             )
@@ -857,13 +879,8 @@ impl Runtime {
                         }
                     }
                     CommandOutcome::Closed => self.ui.close_session(),
-                    CommandOutcome::Sessions(page) => {
-                        self.ui.session_next = page.next_cursor;
-                        self.ui.session_query = page.query;
-                        self.ui.session_choices = page.items;
-                        self.ui.session_filter.clear();
-                        self.ui.session_choice = 0;
-                        self.ui.session_panel = true;
+                    CommandOutcome::Sessions { page, for_resume } => {
+                        self.ui.show_sessions(page, for_resume)
                     }
                     CommandOutcome::History(page) => self.ui.prepend_history(page),
                     CommandOutcome::ProviderMenu(entries, name, logout) => {

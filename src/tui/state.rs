@@ -1,4 +1,6 @@
-use super::{input::Editor, markdown, text, theme::Theme, tree::Tree};
+use super::{
+    chat_selection::ChatSelection, input::Editor, markdown, text, theme::Theme, tree::Tree,
+};
 use crate::{
     agent::{AgentEvent, AgentMessage, ContentPart, StopReason},
     knowledge::*,
@@ -39,6 +41,7 @@ pub struct Message {
     pub body: String,
 }
 pub enum Action {
+    CopyChatSelection(String),
     LoadHistory(String),
     Provider(Box<super::provider_setup::ProviderAction>),
     Command(crate::commands::Command),
@@ -65,7 +68,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/chat", "显示会话"),
     ("/read", "返回文档"),
     ("/open", "打开知识标题或 ID"),
-    ("/workspace init", "创建工作区"),
+    ("/workspace init", "创建工作区，省略路径时使用当前目录"),
     ("/workspace open", "打开工作区"),
     ("/workspace clone", "克隆工作区"),
     ("/theme auto", "跟随终端主题"),
@@ -121,7 +124,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/context", "查看上下文窗口与活跃 Skill"),
     ("/compact", "安排上下文压缩"),
     ("/skills", "查看可用 Skill"),
-    ("/resume", "恢复工作区会话"),
+    ("/resume", "选择可恢复的会话，也可指定会话 ID"),
     ("/commit", "提交工作区"),
     ("/sync", "同步"),
     ("/sync pull", "拉取并合并远程修改"),
@@ -157,6 +160,7 @@ pub struct Ui {
     pub session_choice: usize,
     pub session_filter: String,
     pub session_panel: bool,
+    pub session_panel_for_resume: bool,
     pub session_next: Option<String>,
     pub session_query: String,
     pub theme: Theme,
@@ -173,6 +177,7 @@ pub struct Ui {
     pub messages: Vec<Message>,
     pub streaming: Option<usize>,
     pub chat_scroll: usize,
+    pub(super) chat_selection: ChatSelection,
     pub follow: bool,
     pub chat_links: Vec<markdown::Link>,
     pub chat_link: Option<usize>,
@@ -231,6 +236,7 @@ impl Ui {
         self.prepended_messages = 0;
         self.latest_button = None;
         self.messages.clear();
+        self.chat_selection = ChatSelection::default();
         self.streaming = None;
         self.reference = None;
         self.document = None;
@@ -301,6 +307,15 @@ impl Ui {
         messages.append(&mut self.messages);
         self.messages = messages;
     }
+    pub(super) fn show_sessions(&mut self, page: crate::session::SessionPage, for_resume: bool) {
+        self.session_next = page.next_cursor;
+        self.session_query = page.query;
+        self.session_choices = page.items;
+        self.session_filter.clear();
+        self.session_choice = 0;
+        self.session_panel_for_resume = for_resume;
+        self.session_panel = true;
+    }
     pub fn new(model: String, theme: Theme) -> Self {
         Self {
             provider_dialog: None,
@@ -316,6 +331,7 @@ impl Ui {
             session_choice: 0,
             session_filter: String::new(),
             session_panel: false,
+            session_panel_for_resume: false,
             session_next: None,
             session_query: String::new(),
             theme,
@@ -332,6 +348,7 @@ impl Ui {
             messages: vec![],
             streaming: None,
             chat_scroll: 0,
+            chat_selection: ChatSelection::default(),
             follow: true,
             chat_links: vec![],
             chat_link: None,
@@ -672,23 +689,26 @@ impl Ui {
                 }
                 // Parameterless commands and commands with existing arguments execute
                 // immediately. A required argument must still be supplied by the user.
-                if self.editor.text.trim() == command
-                    && matches!(
-                        crate::commands::parse(&command),
-                        Some(crate::commands::Command::Invalid(_))
-                    )
-                {
-                    if complete {
-                        self.complete();
+                if self.editor.text.trim() == command {
+                    if let Some(crate::commands::Command::Invalid(reason)) =
+                        crate::commands::parse(&command)
+                    {
+                        if complete {
+                            self.complete();
+                        }
+                        self.notify(
+                            format!("请填写命令参数，完成后按 Enter 执行。\n{reason}"),
+                            false,
+                        );
+                        return None;
                     }
-                    self.notify("请填写命令参数，完成后按 Enter 执行。", false);
-                    return None;
                 }
                 Some(Action::Submit(self.editor.text.clone()))
             }
         }
     }
     pub fn jump_latest(&mut self) {
+        self.chat_selection.clear();
         self.follow = true;
         self.chat_scroll = self.content_lines.saturating_sub(self.viewport_height);
         self.chat_link = None;
@@ -800,10 +820,18 @@ impl Ui {
             match key.code {
                 KeyCode::PageDown => {
                     if let Some(cursor) = &self.session_next {
-                        return Some(Action::Command(crate::commands::Command::SessionsNext {
-                            query: self.session_query.clone(),
-                            cursor: cursor.clone(),
-                        }));
+                        use crate::commands::Command;
+                        let command = if self.session_panel_for_resume {
+                            Command::ResumeList {
+                                cursor: Some(cursor.clone()),
+                            }
+                        } else {
+                            Command::SessionsNext {
+                                query: self.session_query.clone(),
+                                cursor: cursor.clone(),
+                            }
+                        };
+                        return Some(Action::Command(command));
                     }
                 }
                 KeyCode::Esc => self.session_panel = false,
@@ -842,6 +870,9 @@ impl Ui {
             return None;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.view == View::Chat && key.code == KeyCode::Esc && self.chat_selection.clear() {
+            return None;
+        }
         if ctrl {
             match key.code {
                 KeyCode::End if self.view == View::Chat && self.focus != Focus::Tree => {
@@ -857,12 +888,17 @@ impl Ui {
                     return Some(Action::Quit);
                 }
                 KeyCode::Char('c') => {
+                    if self.view == View::Chat {
+                        if let Some(text) = self.chat_selection.copy_text() {
+                            return Some(Action::CopyChatSelection(text));
+                        }
+                    }
                     return if self.busy {
                         Some(Action::Cancel)
                     } else {
                         self.editor.take();
                         None
-                    }
+                    };
                 }
                 KeyCode::Char('b') => {
                     self.focus = Focus::Tree;

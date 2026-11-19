@@ -22,7 +22,10 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum CommandOutcome {
     Text(String),
     Activated(Box<crate::session::SessionView>),
-    Sessions(crate::session::SessionPage),
+    Sessions {
+        page: crate::session::SessionPage,
+        for_resume: bool,
+    },
     History(crate::session::HistoryPage),
     ProviderModels(Box<crate::provider::ProviderModelCatalog>),
     ProviderMenu(Vec<crate::provider::ProviderEntry>, Option<String>, bool),
@@ -34,7 +37,7 @@ impl CommandOutcome {
         match self {
             Self::Text(text) => text.clone(),
             Self::Activated(view) => serde_json::to_string_pretty(view).unwrap(),
-            Self::Sessions(page) => serde_json::to_string_pretty(page).unwrap(),
+            Self::Sessions { page, .. } => serde_json::to_string_pretty(page).unwrap(),
             Self::History(page) => serde_json::to_string_pretty(page).unwrap(),
             Self::ProviderModels(catalog) => catalog.render(),
             Self::ProviderMenu(entries, _, _) => entries
@@ -433,12 +436,12 @@ impl Application {
                 })?;
             return Ok(CommandOutcome::ProviderModels(Box::new(catalog)));
         }
-        use crate::session::*;
         if matches!(
             command,
             Command::New
                 | Command::NewTitled(_)
                 | Command::Resume(_)
+                | Command::ResumeList { .. }
                 | Command::Sessions(_)
                 | Command::SessionsNext { .. }
                 | Command::Session(_)
@@ -465,29 +468,11 @@ impl Application {
                         .switch(&id, false, Some(&self.local_ui))
                         .await?,
                 )),
-                Command::SessionsNext { query, cursor } => CommandOutcome::Sessions(
-                    self.manager
-                        .as_ref()
-                        .unwrap()
-                        .list(SessionQuery {
-                            query,
-                            cursor: Some(cursor),
-                            include_archived: true,
-                            ..Default::default()
-                        })
-                        .await?,
-                ),
-                Command::Sessions(query) => CommandOutcome::Sessions(
-                    self.manager
-                        .as_ref()
-                        .unwrap()
-                        .list(SessionQuery {
-                            query,
-                            include_archived: true,
-                            ..Default::default()
-                        })
-                        .await?,
-                ),
+                listing @ (Command::ResumeList { .. }
+                | Command::Sessions(_)
+                | Command::SessionsNext { .. }) => {
+                    list_sessions(self.manager.as_ref().unwrap(), listing).await?
+                }
                 Command::Session(SessionCommand::Close) => {
                     self.manager.as_mut().unwrap().close(Some(&self.local_ui))?;
                     CommandOutcome::Closed
@@ -609,6 +594,7 @@ impl Application {
             Command::New
             | Command::NewTitled(_)
             | Command::Resume(_)
+            | Command::ResumeList { .. }
             | Command::Sessions(_)
             | Command::SessionsNext { .. }
             | Command::Session(_) => {
@@ -1272,6 +1258,11 @@ impl Application {
         agent.register_plugin(skills.clone());
         skills.register_tools(&mut agent, session.clone());
         agent.register_tool(Arc::new(ContextArtifactTool(session)));
+        let bash_inputs = match &self.workspace {
+            Some(workspace) => workspace.root().to_owned(),
+            None => std::env::current_dir()?,
+        };
+        agent.register_tool(Arc::new(BashTool::new(bash_inputs)));
         if let Some(workspace) = &self.workspace {
             register_knowledge_tools(&mut agent, workspace.clone());
             crate::study::register_study_tools(&mut agent, workspace.clone());
@@ -1517,6 +1508,7 @@ pub(super) fn session_read_command(command: &Command) -> bool {
     matches!(
         command,
         Command::Sessions(_)
+            | Command::ResumeList { .. }
             | Command::Models
             | Command::Providers
             | Command::SessionsNext { .. }
@@ -1525,6 +1517,35 @@ pub(super) fn session_read_command(command: &Command) -> bool {
             )
     )
 }
+async fn list_sessions(
+    manager: &crate::session::SessionManager,
+    command: Command,
+) -> WorkspaceResult<CommandOutcome> {
+    if let Command::ResumeList { cursor } = command {
+        return Ok(CommandOutcome::Sessions {
+            page: manager.list_resumable(cursor).await?,
+            for_resume: true,
+        });
+    }
+    let (query, cursor) = match command {
+        Command::Sessions(query) => (query, None),
+        Command::SessionsNext { query, cursor } => (query, Some(cursor)),
+        _ => unreachable!("only session list commands reach this handler"),
+    };
+    let page = manager
+        .list(crate::session::SessionQuery {
+            query,
+            cursor,
+            include_archived: true,
+            ..Default::default()
+        })
+        .await?;
+    Ok(CommandOutcome::Sessions {
+        page,
+        for_resume: false,
+    })
+}
+
 pub(super) async fn read_session_command(
     repo: Arc<crate::session::SessionRepository>,
     id: Option<String>,
@@ -1543,25 +1564,9 @@ pub(super) async fn read_session_command(
                 .map_err(|e| WorkspaceError::Configuration(e.to_string()))?,
             )?))
         }
-        Command::Sessions(query) => Ok(CommandOutcome::Sessions(
-            manager
-                .list(crate::session::SessionQuery {
-                    query,
-                    include_archived: true,
-                    ..Default::default()
-                })
-                .await?,
-        )),
-        Command::SessionsNext { query, cursor } => Ok(CommandOutcome::Sessions(
-            manager
-                .list(crate::session::SessionQuery {
-                    query,
-                    cursor: Some(cursor),
-                    include_archived: true,
-                    ..Default::default()
-                })
-                .await?,
-        )),
+        listing @ (Command::ResumeList { .. }
+        | Command::Sessions(_)
+        | Command::SessionsNext { .. }) => list_sessions(&manager, listing).await,
         Command::Session(SessionCommand::Info) => Ok(CommandOutcome::Text(display(
             &manager
                 .inspect(&id.ok_or_else(|| WorkspaceError::NotFound("no active session".into()))?)

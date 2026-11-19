@@ -1,6 +1,6 @@
 # 核心规则与工具指导
 
-应用核心规则位于 `src/agent/prompts/core.md`，由 `LUMEN_CORE_PROMPT` 编译进程序。当前版本为 v1，覆盖任务交流、学习支持、研究证据、工具与 Skill、知识写入、上下文解释和交付。修改行为契约时同时提升 `src/agent/prompt.rs` 中的版本号。
+应用核心规则位于 `src/agent/prompts/core.md`，由 `LUMEN_CORE_PROMPT` 编译进程序。当前版本为 v2，覆盖任务交流、学习支持、研究证据、工具与 Skill、知识写入、上下文解释和交付；v2 增加 Bash 的隔离、联网、临时文件和结果保存规则。修改行为契约时同时提升 `src/agent/prompt.rs` 中的版本号。
 
 ## 分层职责
 

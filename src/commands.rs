@@ -26,6 +26,9 @@ pub enum Command {
     Compact,
     Skills,
     Resume(String),
+    ResumeList {
+        cursor: Option<String>,
+    },
     Stop,
     Chat,
     Read(Option<String>),
@@ -307,7 +310,16 @@ pub fn parse(input: &str) -> Option<Command> {
         "/context" if args.is_empty() => Command::Context,
         "/compact" if args.is_empty() => Command::Compact,
         "/skills" if args.is_empty() => Command::Skills,
-        "/resume" if args.len() == 1 => Command::Resume(args[0].clone()),
+        "/resume" => match args {
+            [] => Command::ResumeList { cursor: None },
+            [id] if !id.trim().is_empty() && id != "--cursor" => Command::Resume(id.clone()),
+            [flag, cursor] if flag == "--cursor" && !cursor.trim().is_empty() => {
+                Command::ResumeList {
+                    cursor: Some(cursor.clone()),
+                }
+            }
+            _ => invalid(),
+        },
         "/stop" | "/cancel" => Command::Stop,
         "/chat" if args.is_empty() => Command::Chat,
         "/read" => Command::Read(rest()),
@@ -444,9 +456,16 @@ pub fn parse(input: &str) -> Option<Command> {
         },
         "/validate" if args.is_empty() => Command::Validate,
         "/workspace" => match args.first().map(String::as_str) {
-            Some("init") if args.len() == 2 => {
+            Some("init") if args.len() == 1 => {
+                Command::Workspace(WorkspaceCommand::Init(PathBuf::from(".")))
+            }
+            Some("init") if args.len() == 2 && !args[1].trim().is_empty() => {
                 Command::Workspace(WorkspaceCommand::Init(args[1].clone().into()))
             }
+            Some("init") => Command::Invalid(
+                "用法为 /workspace init [路径]。省略路径时使用当前目录。路径包含空格时请加引号。"
+                    .into(),
+            ),
             Some("open") if args.len() == 2 => {
                 Command::Workspace(WorkspaceCommand::Open(args[1].clone().into()))
             }
@@ -496,14 +515,43 @@ pub fn parse(input: &str) -> Option<Command> {
     })
 }
 pub fn help() -> &'static str {
-    concat!("/help | /quit | /new | /clear | /model [alias|id] | /models | /providers | /status | /stop\n/context | /compact | /skills | /resume <session-id>\n/sessions [query] | /sessions --cursor <cursor> [query] | /session\n/session rename <title> | archive [id] | unarchive <id> | close | history [before]\n/session inspect <id> | preview <legacy.jsonl> | import <legacy.jsonl>\n/chat | /read [title|id] | /open <title|id> | /knowledge | /theme [auto|light|dark]\n/workspace init <path> | open <path> | clone <url> <path> | config [key value]\n/search <query> | /commit <message> | /sync [message]\n/sync pull | push | fetch | remote [url|none] | conflicts | resolve <path> <file|delete> | continue | abort\n/history [id] | /diff [id] | /restore <id> <commit>\n/index status | refresh | rebuild <all|lexical|relations|learning_state|vectors|summaries>\n/validate\n",
+    concat!("/help | /quit | /new | /clear | /model [alias|id] | /models | /providers | /status | /stop\n/context | /compact | /skills | /resume [session-id] | /resume --cursor <cursor>\n/sessions [query] | /sessions --cursor <cursor> [query] | /session\n/session rename <title> | archive [id] | unarchive <id> | close | history [before]\n/session inspect <id> | preview <legacy.jsonl> | import <legacy.jsonl>\n/chat | /read [title|id] | /open <title|id> | /knowledge | /theme [auto|light|dark]\n/workspace init [path] | open <path> | clone <url> <path> | config [key value]\n/search <query> | /commit <message> | /sync [message]\n/sync pull | push | fetch | remote [url|none] | conflicts | resolve <path> <file|delete> | continue | abort\n/history [id] | /diff [id] | /restore <id> <commit>\n/index status | refresh | rebuild <all|lexical|relations|learning_state|vectors|summaries>\n/validate\n",
     "/copy [last|all] 复制最近回复或已加载对话（全屏 TUI）\n/search [--lexical|--hybrid|--semantic] [--rerank] <query>\n/goal [list] | /goal create <title> [description] | /goal show <title|id>\n/goal set <goal> <title|description|baseline|weekly_minutes|status> <value>\n/plan show <goal> | /plan generate <goal> | /plan add <goal> <minutes> <title> [body]\n/plan move <goal> <unit-id> <position> | /plan remove <goal> <unit-id>\n/plan done <unit-id> [note] | /plan reopen <unit-id> [note]\n/progress <goal> | /study <unit-id> | /answer <unit-id> <answer> | /review <goal> <note>\n/web <query> | /research <query> | /fetch <url> | /import <url> [title]\n/services [reload] | /summary <id> [abstract|overview]\n",
     "/login [供应商ID] | /logout [供应商ID]\n/provider add [<名称> [Base URL]] | /provider key <名称>\n/provider models <名称> | /models <名称>\n/provider auth <名称> env <变量名> | /provider auth <名称> none\n/provider model <供应商> <模型ID> <别名> <上下文> <输出上限> [--no-tools]\n",
-    "TUI: F6 切换区域 · F1 会话 · F2 阅读 · Ctrl+B 目录 · i 输入 · Esc 浏览\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 停止 · Ctrl+Q 退出\n对话: 滚轮/PgUp/PgDn 翻阅 · 点击回到最新/Ctrl+End 返回底部 · /copy 复制回复\n阅读: f 查找 · a 引用章节 · v 选区/↑↓ 扩展/a 引用 · Tab 选择链接/Enter 打开\n输入: / 命令 · @ 引用 · ↑↓ 选择 · Enter 执行命令或确认引用 · Tab 补全 · Ctrl+R 移除引用")
+    "TUI: F6 切换区域 · F1 会话 · F2 阅读 · Ctrl+B 目录 · i 输入 · Esc 浏览\nEnter 发送 · Ctrl+J 换行 · Ctrl+C 复制选区或停止 · Ctrl+Q 退出\n对话: 滚轮/PgUp/PgDn 翻阅 · 点击回到最新/Ctrl+End 返回底部 · 左键拖选 · /copy 复制回复\n阅读: f 查找 · a 引用章节 · v 选区/↑↓ 扩展/a 引用 · Tab 选择链接/Enter 打开\n输入: / 命令 · @ 引用 · ↑↓ 选择 · Enter 执行命令或确认引用 · Tab 补全 · Ctrl+R 移除引用")
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_init_defaults_to_current_directory_and_validates_explicit_paths() {
+        assert_eq!(
+            parse("/workspace init"),
+            Some(Command::Workspace(WorkspaceCommand::Init(".".into())))
+        );
+        for input in [
+            "/workspace init \"\"",
+            "/workspace init '   '",
+            "/workspace init /tmp/my notes",
+        ] {
+            let Some(Command::Invalid(message)) = parse(input) else {
+                panic!("expected a usage error for {input}");
+            };
+            assert!(message.contains("/workspace init [路径]"));
+        }
+        assert_eq!(
+            parse("/workspace init /tmp/lumen-knowledge"),
+            Some(Command::Workspace(WorkspaceCommand::Init(
+                "/tmp/lumen-knowledge".into()
+            )))
+        );
+        assert_eq!(
+            parse("/workspace init '/tmp/学习 空间'"),
+            Some(Command::Workspace(WorkspaceCommand::Init(
+                "/tmp/学习 空间".into()
+            )))
+        );
+    }
     #[test]
     fn copy_target_is_explicit_and_invalid_arguments_are_rejected() {
         for command in ["/copy", "/copy last"] {

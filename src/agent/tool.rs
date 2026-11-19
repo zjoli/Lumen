@@ -21,6 +21,13 @@ pub trait AgentTool: Send + Sync {
     fn input_schema(&self) -> Value {
         serde_json::json!({"type":"object"})
     }
+    fn execution_timeout(&self, _args: &Value) -> std::time::Duration {
+        std::time::Duration::from_secs(30)
+    }
+    /// Time allowed for a cooperative executor to terminate owned resources.
+    fn cancellation_grace(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
     async fn execute(&self, args: Value, ctx: ToolContext) -> Result<ToolResult, AgentError>;
 }
 #[derive(Default)]
@@ -64,10 +71,34 @@ impl ToolRegistry {
             };
         }
         let child = cancel.child_token();
+        let execution_timeout = tool.execution_timeout(&call.arguments);
+        let cancellation_grace = tool.cancellation_grace();
+        let execution = tool.execute(
+            call.arguments.clone(),
+            ToolContext {
+                cancel: child.clone(),
+            },
+        );
+        tokio::pin!(execution);
         let outcome = tokio::select! {
             biased;
-            result = tokio::time::timeout(std::time::Duration::from_secs(30), tool.execute(call.arguments.clone(), ToolContext { cancel: child.clone() })) => result.unwrap_or_else(|_| Err(AgentError::Tool("tool timeout".into()))),
-            _ = cancel.cancelled() => Err(AgentError::Aborted),
+            result = &mut execution => result,
+            _ = tokio::time::sleep(execution_timeout) => {
+                child.cancel();
+                if !cancellation_grace.is_zero() {
+                    let _ = tokio::time::timeout(cancellation_grace, &mut execution).await;
+                }
+                Err(AgentError::Tool("tool timeout".into()))
+            },
+            _ = cancel.cancelled() => {
+                child.cancel();
+                if cancellation_grace.is_zero() {
+                    Err(AgentError::Aborted)
+                } else {
+                    tokio::time::timeout(cancellation_grace, &mut execution)
+                        .await.unwrap_or(Err(AgentError::Aborted))
+                }
+            },
         };
         child.cancel();
         match outcome {

@@ -40,7 +40,7 @@
 
 复制通过 OSC 52 请求宿主终端写入剪贴板，也适用于支持该协议的远程终端；终端不提供写入成功回执，因此状态栏显示“已请求终端复制”。VS Code 从 1.91 起支持该协议；其他终端可能需要允许剪贴板写入。tmux 使用透传序列，需启用相应的 passthrough 支持。相关说明见 [VS Code OSC 52 支持](https://code.visualstudio.com/updates/v1_91#_support-for-copy-and-paste-escape-sequence-osc-52)。
 
-局部选字可使用宿主终端的原生选择。TUI 开启鼠标捕获来支持滚轮和“回到最新”，普通拖拽会被转发给 TUI；在 VS Code 的 Windows/Linux 终端中，按住 **Alt** 再拖拽可强制终端选字，之后使用终端右键菜单中的“复制”。macOS 需先启用 `terminal.integrated.macOptionClickForcesSelection`，再按住 **Option** 拖拽。其他终端的强制选择修饰键由宿主决定。Ctrl+C 在 Lumen 中用于停止任务或清空输入；如果复制快捷键也被透传，使用宿主的复制菜单。参见 [VS Code 鼠标事件说明](https://code.visualstudio.com/docs/terminal/basics#_mouse-events-mode)。
+在对话区用鼠标左键拖动即可选中显示的文字，按 **Ctrl+C** 复制，按 **Esc** 或点击其他位置清除选区。选区复制保留屏幕上的折行，复制 Markdown 原文可用 `/copy` 或 `/copy all`。没有选区时，Ctrl+C 用于停止任务或清空输入。
 
 ## 终端主题与字体
 
@@ -68,7 +68,9 @@ TUI 只能处理宿主终端转发的按键。VS Code 先处理快捷键，被�
 
 ## 运行与验证
 
-`cargo run --bin lumen-tui -- --workspace /path/to/knowledge` 打开已有工作区。无工作区时可通过输入框执行 `/workspace init <路径>` 或 `/workspace open <路径>`。模型连接与别名配置见 [供应商配置](providers.md)，旧环境变量入口继续兼容；演示模型使用 mock。
+`cargo run --bin lumen-tui -- --workspace /path/to/knowledge` 打开已有工作区。无工作区时可通过输入框执行 `/workspace init [路径]` 或 `/workspace open <路径>`。模型连接与别名配置见 [供应商配置](providers.md)，旧环境变量入口继续兼容；演示模型使用 mock。
+
+`/workspace init` 默认使用启动 Lumen 时的当前目录，目标须为空目录或尚不存在，并位于现有 Git 仓库之外。可以指定路径，例如 `/workspace init "/tmp/学习 空间"`。从命令候选选择创建工作区时，按 Enter 使用当前目录，或按 Tab 补全后填写路径。
 
 全屏界面将渲染、输入与后台工作分离，退出前取消任务并关闭工作区、完成会话归档。全屏模式启用鼠标事件以支持滚动和点击，目录与内容区分别响应滚轮，弹窗阻止后台区域误操作；正常退出、错误返回和 panic 均恢复终端及鼠标模式。管道和 `--plain` 保留原有行模式。
 
@@ -80,7 +82,9 @@ TUI 只能处理宿主终端转发的按键。VS Code 先处理快捷键，被�
 
 `/compact` 安排下一请求前压缩；原始会话记录保留。`/skills` 列出用户、工作区和额外目录中的 Skill 及发现诊断。模型可以按需加载正文、读取资源、记录步骤并标记完成；活跃工作流在压缩后恢复。
 
-`/sessions [query]` 打开会话列表，支持标题与正文搜索、归档标记、输入过滤和键盘选择；PgDn 请求下一页。`/resume <session-id>` 恢复会话，ID 可从列表或 `/context` 获取。聊天滚动到顶部时，继续向上滚动或按 PgUp 会异步加载更早记录，生成回复时也可读取。历史页合并后保持当前阅读位置，重复滚轮事件不会重复发起同一页读取；加载失败可继续向上滚动重试。切换会话后丢弃旧会话的迟到结果。UI 分页不会扩大模型上下文。
+`/resume` 列出当前会话库中可恢复的会话。全屏模式按 ↑↓ 选择、Enter 恢复、PgDn 翻页。行模式输出会话 ID，使用 `/resume <session-id>` 直接恢复，使用 `/resume --cursor <cursor>` 查看下一页。`/sessions [query]` 打开完整会话列表，支持标题与正文搜索和归档标记。
+
+聊天滚动到顶部时，继续向上滚动或按 PgUp 会异步加载更早记录，生成回复时也可读取。历史页合并后保持当前阅读位置，重复滚轮事件不会重复发起同一页读取；加载失败可继续向上滚动重试。切换会话后丢弃旧会话的迟到结果。UI 分页不会扩大模型上下文。
 
 `/new [title]` 创建并选中新会话；`/session rename <title>`、`/session archive [id]`、`/session unarchive <id>` 管理元数据；`/session close` 释放当前会话。运行中切换被拒绝，先 `/stop` 并等待保存结束。不同会话分别保存草稿、阅读位置与引用；原文 revision 改变时清除旧选区。
 

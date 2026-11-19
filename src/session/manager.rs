@@ -246,12 +246,29 @@ impl SessionManager {
         })
     }
     pub async fn list(&self, query: SessionQuery) -> R<SessionPage> {
+        self.list_matching(query, false).await
+    }
+    pub(crate) async fn list_resumable(&self, cursor: Option<String>) -> R<SessionPage> {
+        self.list_matching(
+            SessionQuery {
+                cursor,
+                ..Default::default()
+            },
+            true,
+        )
+        .await
+    }
+    async fn list_matching(&self, query: SessionQuery, resumable_only: bool) -> R<SessionPage> {
         let tree = self.repo.files().await?;
         let generation = crate::workspace::files::fingerprint(&tree);
-        let query_hash = content_hash(&serde_json::to_vec(&(
-            &query.query,
-            query.include_archived,
-        ))?);
+        let query_hash = if resumable_only {
+            content_hash(b"resumable sessions")
+        } else {
+            content_hash(&serde_json::to_vec(&(
+                &query.query,
+                query.include_archived,
+            ))?)
+        };
         let offset = if let Some(cursor) = query.cursor {
             let parts: Vec<_> = cursor.split(':').collect();
             if parts.len() != 3 || parts[0] != generation || parts[1] != query_hash {
@@ -291,6 +308,7 @@ impl SessionManager {
             } else {
                 let loaded = match self.repo.load_from(&id, &local) {
                     Ok(loaded) => loaded,
+                    Err(_) if resumable_only => continue,
                     Err(error) => {
                         let mut metadata = SessionMetadata::new(
                             Some(format!("无法读取的会话 {id}")),
@@ -329,6 +347,14 @@ impl SessionManager {
                 )?;
                 (info, search)
             };
+            if resumable_only
+                && !matches!(
+                    info.health,
+                    SessionHealth::Complete | SessionHealth::Interrupted
+                )
+            {
+                continue;
+            }
             let q = query.query.to_lowercase();
             if (query.include_archived || !info.metadata.archived)
                 && (info.metadata.title.to_lowercase().contains(&q)
